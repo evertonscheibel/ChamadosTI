@@ -1,0 +1,10 @@
+[Unit]
+Description=Frizelo WhatsApp API authenticated health checks
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/apps/central-relacionamentos/check.py
+User=root
+NoNewPrivileges=true
+PrivateTmp=true

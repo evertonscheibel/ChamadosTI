@@ -1,0 +1,9 @@
+[Unit]
+Description=Check Frizelo WhatsApp APIs every five minutes
+
+[Timer]
+OnBootSec=180
+OnUnitActiveSec=300
+
+[Install]
+WantedBy=timers.target
