@@ -11,7 +11,7 @@ import { synchronization, startSynchronization } from "./senior-import.mjs";
 import { managementCsv } from "./management-export.mjs";
 import { managementReport } from "./indicators.mjs";
 import { initializeLinks, registerLink } from "./integration-links.mjs";
-import { reply as hermesReply } from "./hermes-chat.mjs";
+import { reply as hermesReply, realSystemPrompt } from "./hermes-chat.mjs";
 import { classify as classifyChat } from "./chatbot-router.mjs";
 import {
   welcomeMessage,
@@ -19,6 +19,13 @@ import {
   identityDeclinedMessage,
   exampleFor,
 } from "./chatbot-templates.mjs";
+import {
+  lookupCandidate,
+  buildChallenge,
+  looksUnknown,
+} from "./senior-identity.mjs";
+import { realReply, parseMonth } from "./senior-reply.mjs";
+import { normalizedCpf } from "./identity.mjs";
 import {
   vacancyStatus,
   vacancyApplications,
@@ -78,6 +85,176 @@ function chatAllowed(key) {
     resetAt: active ? limit.resetAt : now + 60000,
   });
   return true;
+}
+// =============================================================================
+// Atendimento real (dado real da Senior, após verificação de identidade)
+// =============================================================================
+const attendanceSessions = new Map();
+function attendanceSession(id) {
+  const now = Date.now();
+  for (const [key, value] of attendanceSessions)
+    if (now - value.updated > 2 * 3600000) attendanceSessions.delete(key);
+  let session = attendanceSessions.get(id);
+  if (!session) {
+    session = {
+      stage: "collect_cpf", // collect_cpf -> collect_matricula -> challenge -> verified | blocked
+      cpf: null,
+      matricula: null,
+      candidate: null,
+      challenge: [],
+      attempts: 0,
+      lookupFails: 0,
+      awaitingMonthFor: null,
+      month: null,
+      messages: [],
+      tickets: [],
+      aiActive: false,
+      updated: now,
+    };
+    attendanceSessions.set(id, session);
+  }
+  session.updated = now;
+  return session;
+}
+function firstName(candidate) {
+  return (candidate?.NOMFUN || "").trim().split(/\s+/)[0] || "";
+}
+async function startChallengeOrVerify(session) {
+  const found = await lookupCandidate({
+    cpf: session.cpf,
+    matricula: session.matricula,
+  });
+  if (!found) {
+    session.lookupFails++;
+    if (session.lookupFails >= 3) {
+      session.stage = "blocked";
+      return "Não consegui confirmar esse cadastro depois de algumas tentativas. Procure o RH para continuar.";
+    }
+    session.stage = "collect_cpf";
+    session.cpf = null;
+    session.matricula = null;
+    return "Não encontrei um cadastro ativo com esses dados. Vamos tentar de novo — qual é o seu CPF? (Se não souber, digite 'não sei'.)";
+  }
+  session.candidate = found;
+  if (session.cpf && session.matricula) {
+    session.stage = "verified";
+    return `Identidade confirmada, ${firstName(found)}! Posso consultar seu holerite, espelho de ponto, férias ou benefícios de verdade, ou você pode me contar uma dúvida.`;
+  }
+  session.challenge = buildChallenge(found, {
+    cpfKnown: Boolean(session.cpf),
+    matriculaKnown: Boolean(session.matricula),
+  });
+  session.attempts = 0;
+  if (!session.challenge.length) {
+    // nenhuma pergunta extra disponível neste cadastro: segue com o que já foi confirmado
+    session.stage = "verified";
+    return `Identidade confirmada, ${firstName(found)}! Posso consultar seu holerite, espelho de ponto, férias ou benefícios de verdade, ou você pode me contar uma dúvida.`;
+  }
+  session.stage = "challenge";
+  return `Preciso confirmar mais um detalhe do seu cadastro. ${session.challenge[0].prompt}`;
+}
+async function handleAttendanceMessage(session, message) {
+  if (/^(reiniciar|recome[çc]ar|menu)$/i.test(message.trim())) {
+    session.stage = "collect_cpf";
+    session.cpf = null;
+    session.matricula = null;
+    session.candidate = null;
+    session.challenge = [];
+    session.attempts = 0;
+    session.awaitingMonthFor = null;
+    return "Vamos recomeçar. Qual é o seu CPF? (Se não souber, digite 'não sei'.)";
+  }
+  if (session.stage === "blocked")
+    return "Esta sessão não pôde confirmar sua identidade. Procure o RH para continuar — por telefone ou presencialmente.";
+  if (session.stage === "collect_cpf") {
+    if (looksUnknown(message)) {
+      session.cpf = null;
+    } else {
+      const cpf = normalizedCpf(message);
+      if (!cpf) return "Não entendi. Digite seu CPF (só números) ou 'não sei'.";
+      session.cpf = cpf;
+    }
+    session.stage = "collect_matricula";
+    return "Agora sua matrícula, se souber. (Pode digitar 'não sei'.)";
+  }
+  if (session.stage === "collect_matricula") {
+    if (looksUnknown(message)) {
+      session.matricula = null;
+    } else {
+      const digits = message.replace(/\D/g, "");
+      if (!digits)
+        return "Não entendi. Digite sua matrícula (só números) ou 'não sei'.";
+      session.matricula = digits;
+    }
+    if (!session.cpf && !session.matricula) {
+      session.stage = "blocked";
+      return "Sem CPF nem matrícula não consigo confirmar sua identidade com segurança. Procure o RH para continuar — por telefone ou presencialmente.";
+    }
+    return startChallengeOrVerify(session);
+  }
+  if (session.stage === "challenge") {
+    const current = session.challenge[0];
+    if (current.check(message)) {
+      session.challenge.shift();
+      session.attempts = 0;
+      if (!session.challenge.length) {
+        session.stage = "verified";
+        return `Identidade confirmada, ${firstName(session.candidate)}! Posso consultar seu holerite, espelho de ponto, férias ou benefícios de verdade, ou você pode me contar uma dúvida.`;
+      }
+      return session.challenge[0].prompt;
+    }
+    session.attempts++;
+    if (session.attempts >= 2) {
+      session.stage = "blocked";
+      return "Não bateu com o nosso cadastro. Procure o RH para continuar — por telefone ou presencialmente.";
+    }
+    return `Não confere com o nosso cadastro. Tente de novo: ${current.prompt}`;
+  }
+  // stage === "verified"
+  if (session.awaitingMonthFor) {
+    const month = parseMonth(message);
+    if (!month) return "Não entendi o mês. Pode informar assim: 09/2026.";
+    session.month = month;
+    const kind = session.awaitingMonthFor;
+    session.awaitingMonthFor = null;
+    return realReply(session.candidate, kind, month);
+  }
+  const category = session.aiActive ? "duvida" : await classifyChat(message);
+  session.aiActive = false;
+  if (["holerite", "ponto", "ferias", "beneficios"].includes(category)) {
+    if (category !== "ferias" && !session.month) {
+      session.awaitingMonthFor = category;
+      return "Qual mês você quer consultar? (ex.: 09/2026)";
+    }
+    return realReply(session.candidate, category, session.month);
+  }
+  if (category === "saudacao")
+    return `Olá, ${firstName(session.candidate)}! Posso consultar seu holerite, espelho de ponto, férias ou benefícios de verdade, ou me contar uma dúvida.`;
+  // "duvida": única categoria que fala com a IA nesta sessão — o histórico só
+  // acumula a partir daqui, nunca os passos de verificação de identidade.
+  session.aiActive = true;
+  session.messages.push({ role: "user", content: message });
+  let outcome;
+  try {
+    outcome = await hermesReply(session.messages, {
+      systemPrompt: realSystemPrompt,
+    });
+  } catch (e) {
+    session.messages.pop();
+    session.aiActive = false;
+    throw e;
+  }
+  session.messages.push({ role: "assistant", content: outcome.text });
+  if (outcome.request && session.tickets.length < 10) {
+    session.tickets.push({
+      protocol: `AT-${String(session.tickets.length + 1).padStart(4, "0")}`,
+      subject: outcome.request.subject || "Dúvida de RH",
+      description: outcome.request.description || "",
+      status: "Aberto",
+    });
+    session.aiActive = false;
+  }
+  return outcome.text;
 }
 const publicUser = (user) => ({
   id: user.id,
@@ -451,6 +628,33 @@ http
         if (ticket) session.aiActive = false; // protocolo fechado: próxima mensagem volta pra triagem
         return json(res, 200, {
           text: outcome.text,
+          ticket,
+          tickets: session.tickets,
+        });
+      }
+      if (pathname === "/api/atendimento/message" && req.method === "POST") {
+        const input = await body(req);
+        const sessionId = text(input.sessionId, 64, "sessão");
+        if (!/^[a-zA-Z0-9-]{8,64}$/.test(sessionId))
+          fail(400, "Sessão de atendimento inválida.");
+        const message = text(input.text, 500, "mensagem");
+        if (!chatAllowed(req.socket.remoteAddress))
+          fail(429, "Muitas mensagens em pouco tempo. Aguarde um instante.");
+        const session = attendanceSession(sessionId);
+        if (session.messages.length >= 40)
+          fail(
+            429,
+            "Esta conversa atingiu o limite de mensagens. Reinicie o atendimento.",
+          );
+        const before = session.tickets.length;
+        const replyText = await handleAttendanceMessage(session, message);
+        const ticket =
+          session.tickets.length > before
+            ? session.tickets[session.tickets.length - 1]
+            : null;
+        return json(res, 200, {
+          text: replyText,
+          stage: session.stage,
           ticket,
           tickets: session.tickets,
         });

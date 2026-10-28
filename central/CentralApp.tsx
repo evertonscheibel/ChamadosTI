@@ -1331,6 +1331,13 @@ export default function CentralApp() {
               Simulador do chatbot
             </button>
             <button
+              onClick={() => {
+                window.location.href = "/?atendimento=1";
+              }}
+            >
+              Atendimento (dados reais)
+            </button>
+            <button
               className={view === "home" && !active ? "nav-active" : ""}
               onClick={() => navigate("home")}
             >

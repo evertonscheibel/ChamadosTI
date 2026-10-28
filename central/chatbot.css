@@ -32,6 +32,13 @@
   padding: 8px 12px;
   border-radius: 30px;
 }
+.bot-demo-real {
+  color: #841c11;
+  background: #f6e6e2;
+}
+.bot-demo-real > span {
+  background: #841c11 !important;
+}
 .bot-demo > span {
   width: 6px;
   height: 6px;

@@ -80,6 +80,19 @@ export const systemPrompt = [
   "Seja breve: respostas curtas e diretas, em português do Brasil, sem repetir o aviso de simulação em toda mensagem (uma vez já basta).",
 ].join(" ");
 
+// Usado no atendimento real (colaborador já identificado por fora desta
+// conversa — ver senior-identity.mjs). Nunca diz "é fictício": aqui seria
+// mentira. Holerite/ponto/férias/benefícios já são respondidos com dado real
+// por fora da IA (central/senior-reply.mjs); este prompt só cobre dúvidas.
+export const realSystemPrompt = [
+  "Você é o assistente de RH da Central de Relacionamentos Frizelo, atendendo um colaborador JÁ IDENTIFICADO — a identidade foi verificada antes desta conversa, por outro mecanismo.",
+  "Nunca peça CPF, senha ou qualquer dado de verificação: isso já foi confirmado antes de você entrar na conversa.",
+  "Holerite, espelho de ponto, férias e benefícios já são respondidos com dados reais por outra parte do sistema, não por você. Se o colaborador perguntar sobre esses temas aqui, é porque quer algo além do que já foi mostrado — nunca invente números, valores ou datas.",
+  `Para dúvidas e problemas que precisem de acompanhamento humano, explique que o canal é abrir um chamado em "${ticketArea}" e resuma o assunto e a descrição, pedindo confirmação explícita antes de registrar.`,
+  'Só depois da confirmação, termine a resposta — e apenas nesse caso — com uma última linha isolada no formato exato <<PROTOCOLO assunto="..." descricao="...">>, sem nada depois dela. O número do protocolo é gerado pelo sistema, nunca por você.',
+  "Seja breve e direto, em português do Brasil.",
+].join(" ");
+
 /** Remove o marcador de protocolo do texto e devolve o pedido, se houver. */
 export function extractProtocolRequest(text) {
   const match = protocolTag.exec(text);
@@ -126,12 +139,15 @@ async function callModel(settings, model, messages, options = {}) {
   return content.trim();
 }
 
-export async function reply(history) {
+export async function reply(history, options = {}) {
   const settings = configuration();
   if (!settings.enabled)
     throw error("O assistente de IA não está configurado neste ambiente.", 503);
   const trimmed = history.slice(-limits.maxHistoryMessages);
-  const messages = [{ role: "system", content: systemPrompt }, ...trimmed];
+  const messages = [
+    { role: "system", content: options.systemPrompt || systemPrompt },
+    ...trimmed,
+  ];
   let lastError;
   for (const model of settings.models) {
     try {
