@@ -26,7 +26,7 @@ import {
   Send,
   CheckCircle2,
 } from "lucide-react";
-import { services, statuses } from "./catalog.mjs";
+import { services, statuses, faq } from "./catalog.mjs";
 import "./central.css";
 import { api } from "./api";
 import SeniorDocuments from "./SeniorDocuments";
@@ -809,28 +809,6 @@ function RequestDetail({
   );
 }
 
-const questions = [
-  [
-    "Como faço uma solicitação?",
-    "Entre com seu CPF e senha, escolha o serviço, preencha as informações e envie. Um protocolo será gerado para acompanhar o atendimento.",
-  ],
-  [
-    "Onde acompanho a resposta do RH?",
-    "Em Minhas solicitações, abra o protocolo. Você verá o status, as respostas, os documentos e o histórico do atendimento.",
-  ],
-  [
-    "Posso enviar documentos?",
-    "Sim. Você pode anexar até 3 arquivos PDF, JPG ou PNG por envio, com tamanho total de até 5 MB. Envie somente os documentos necessários para o assunto.",
-  ],
-  [
-    "Solicitar férias significa que o período está aprovado?",
-    "A solicitação inicia o atendimento. Aguarde a orientação e a confirmação do RH conforme o processo da empresa.",
-  ],
-  [
-    "Como obtenho meu primeiro acesso?",
-    "Seu cadastro e a liberação de acesso precisam ser confirmados pelo RH. Procure a equipe da sua unidade para receber as orientações.",
-  ],
-];
 function Help() {
   return (
     <div className="help-page">
@@ -838,7 +816,7 @@ function Help() {
       <h1>Dúvidas frequentes</h1>
       <p>Orientações para usar a Central de Relacionamentos.</p>
       <div className="faq-list">
-        {questions.map(([q, a]) => (
+        {faq.map(([q, a]) => (
           <details key={q}>
             <summary>
               {q}

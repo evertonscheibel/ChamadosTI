@@ -6,6 +6,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { api } from "./api";
+import KnowledgeSync from "./KnowledgeSync";
 
 type ConversationSummary = {
   id: string;
@@ -79,6 +80,7 @@ export default function Conversations() {
         </button>
       </div>
       {error && <div className="notice">{error}</div>}
+      <KnowledgeSync />
       <div className="conversations-grid">
         <div className="conversations-list">
           {conversations.length === 0 ? (

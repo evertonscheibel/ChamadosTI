@@ -33,6 +33,16 @@ function signatureOf(files) {
 }
 
 function splitIntoChunks(text) {
+  // Documentos gerados/estruturados (ver knowledge-sync.mjs) usam "## " para
+  // cada item (um evento de folha, um serviço, uma pergunta): cada seção
+  // vira seu próprio trecho, nunca misturada com a seção vizinha — essencial
+  // num catálogo com centenas de itens, onde juntar vários por tamanho de
+  // caractere faria a busca devolver uma mistura de itens não relacionados.
+  if (/^##\s+/m.test(text))
+    return text
+      .split(/\n(?=##\s+)/)
+      .map((s) => s.trim())
+      .filter(Boolean);
   const paragraphs = text
     .split(/\n\s*\n/)
     .map((p) => p.trim())

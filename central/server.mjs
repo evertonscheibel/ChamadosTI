@@ -17,6 +17,7 @@ import {
   realSystemPrompt,
 } from "./hermes-chat.mjs";
 import { contextFor } from "./knowledge.mjs";
+import { syncAll } from "./knowledge-sync.mjs";
 import { classify as classifyChat } from "./chatbot-router.mjs";
 import {
   welcomeMessage,
@@ -722,6 +723,10 @@ http
       }
       if (pathname.startsWith("/api/")) {
         const user = auth(req);
+        if (pathname === "/api/knowledge/sync" && req.method === "POST") {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          return json(res, 200, await syncAll());
+        }
         if (pathname === "/api/conversations" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
           return json(res, 200, { conversations: listConversations() });

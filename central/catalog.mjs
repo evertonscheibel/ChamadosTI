@@ -81,3 +81,28 @@ export const statuses = [
   "Aguardando colaborador",
   "Concluída",
 ];
+// Fonte única das dúvidas frequentes: usada pela página de Ajuda (Help, em
+// CentralApp.tsx) e pelo sincronizador do RAG (knowledge-sync.mjs), para não
+// manter o mesmo conteúdo duplicado em dois lugares.
+export const faq = [
+  [
+    "Como faço uma solicitação?",
+    "Entre com seu CPF e senha, escolha o serviço, preencha as informações e envie. Um protocolo será gerado para acompanhar o atendimento.",
+  ],
+  [
+    "Onde acompanho a resposta do RH?",
+    "Em Minhas solicitações, abra o protocolo. Você verá o status, as respostas, os documentos e o histórico do atendimento.",
+  ],
+  [
+    "Posso enviar documentos?",
+    "Sim. Você pode anexar até 3 arquivos PDF, JPG ou PNG por envio, com tamanho total de até 5 MB. Envie somente os documentos necessários para o assunto.",
+  ],
+  [
+    "Solicitar férias significa que o período está aprovado?",
+    "A solicitação inicia o atendimento. Aguarde a orientação e a confirmação do RH conforme o processo da empresa.",
+  ],
+  [
+    "Como obtenho meu primeiro acesso?",
+    "Seu cadastro e a liberação de acesso precisam ser confirmados pelo RH. Procure a equipe da sua unidade para receber as orientações.",
+  ],
+];
