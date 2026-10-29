@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import KnowledgeSync from "./KnowledgeSync";
+import AiMetrics from "./AiMetrics";
 
 type ConversationSummary = {
   id: string;
@@ -80,6 +81,7 @@ export default function Conversations() {
         </button>
       </div>
       {error && <div className="notice">{error}</div>}
+      <AiMetrics />
       <KnowledgeSync />
       <div className="conversations-grid">
         <div className="conversations-list">

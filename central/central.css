@@ -1219,6 +1219,40 @@ svg {
 .panel > p {
   font-size: 13px;
 }
+.ai-metrics-stats {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.ai-metrics-stats > div {
+  min-width: 140px;
+}
+.ai-metrics-stats strong {
+  display: block;
+  font-size: 24px;
+  color: var(--green);
+}
+.ai-metrics-stats small {
+  font-size: 11px;
+  color: #6b7260;
+}
+.ai-metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+.ai-metrics-table th,
+.ai-metrics-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.ai-metrics-hint {
+  font-size: 11px;
+  color: #8a8076;
+}
 .preserve-lines {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

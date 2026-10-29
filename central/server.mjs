@@ -18,6 +18,7 @@ import {
 } from "./hermes-chat.mjs";
 import { contextFor } from "./knowledge.mjs";
 import { syncAll } from "./knowledge-sync.mjs";
+import { recordAnswer, metricsSummary } from "./ai-metrics.mjs";
 import { classify as classifyChat } from "./chatbot-router.mjs";
 import {
   welcomeMessage,
@@ -193,6 +194,12 @@ function attendanceOptions(session) {
   return null;
 }
 async function handleAttendanceMessage(session, message) {
+  // "blocked" é definitivo para a sessão: checar isso ANTES do atalho de
+  // reinício evita que "reiniciar" vire um jeito de reaproveitar as
+  // tentativas do desafio de identidade indefinidamente (zerava
+  // session.attempts a cada chamada, sem tocar em lookupFails).
+  if (session.stage === "blocked")
+    return "Esta sessão não pôde confirmar sua identidade. Procure o RH para continuar — por telefone ou presencialmente.";
   if (/^(reiniciar|recome[çc]ar|menu)$/i.test(message.trim())) {
     session.stage = "collect_cpf";
     session.cpf = null;
@@ -203,8 +210,6 @@ async function handleAttendanceMessage(session, message) {
     session.awaitingMonthFor = null;
     return "Vamos recomeçar. Qual é o seu CPF? (Se não souber, digite 'não sei'.)";
   }
-  if (session.stage === "blocked")
-    return "Esta sessão não pôde confirmar sua identidade. Procure o RH para continuar — por telefone ou presencialmente.";
   if (session.stage === "collect_cpf") {
     if (looksUnknown(message)) {
       session.cpf = null;
@@ -273,6 +278,7 @@ async function handleAttendanceMessage(session, message) {
   // acumula a partir daqui, nunca os passos de verificação de identidade.
   session.aiActive = true;
   session.messages.push({ role: "user", content: message });
+  const ragHit = Boolean(contextFor(message));
   let outcome;
   try {
     outcome = await hermesReply(session.messages, {
@@ -284,6 +290,7 @@ async function handleAttendanceMessage(session, message) {
     throw e;
   }
   session.messages.push({ role: "assistant", content: outcome.text });
+  let ticketCreated = false;
   if (outcome.request && session.tickets.length < 10) {
     session.tickets.push({
       protocol: `AT-${String(session.tickets.length + 1).padStart(4, "0")}`,
@@ -292,7 +299,9 @@ async function handleAttendanceMessage(session, message) {
       status: "Aberto",
     });
     session.aiActive = false;
+    ticketCreated = true;
   }
+  recordAnswer({ kind: "atendimento", ragHit, ticketCreated });
   return outcome.text;
 }
 const publicUser = (user) => ({
@@ -649,6 +658,7 @@ http
         // "duvida", "confirmacao"/"negacao" fora de contexto, ou categoria
         // desconhecida: caminho seguro é a IA completa.
         session.aiActive = true;
+        const ragHit = Boolean(contextFor(message));
         let outcome;
         try {
           outcome = await hermesReply(session.messages, {
@@ -672,6 +682,11 @@ http
           session.tickets.push(ticket);
         }
         if (ticket) session.aiActive = false; // protocolo fechado: próxima mensagem volta pra triagem
+        recordAnswer({
+          kind: "chatbot",
+          ragHit,
+          ticketCreated: Boolean(ticket),
+        });
         return json(res, 200, {
           text: outcome.text,
           ticket,
@@ -723,6 +738,10 @@ http
       }
       if (pathname.startsWith("/api/")) {
         const user = auth(req);
+        if (pathname === "/api/ai-metrics" && req.method === "GET") {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          return json(res, 200, metricsSummary());
+        }
         if (pathname === "/api/knowledge/sync" && req.method === "POST") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
           return json(res, 200, await syncAll());
