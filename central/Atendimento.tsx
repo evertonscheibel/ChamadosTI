@@ -10,17 +10,25 @@ import {
 } from "lucide-react";
 import "./chatbot.css";
 
-type Message = { role: "bot" | "user"; text: string };
+type Options =
+  | { kind: "topics" }
+  | { kind: "yesno" }
+  | { kind: "month"; choices: string[] }
+  | { kind: "unknown" }
+  | null;
+type Message = { role: "bot" | "user"; text: string; options?: Options };
 type Ticket = {
   protocol: string;
   subject: string;
   description: string;
   status: string;
 };
+const TOPIC_CHOICES = ["Holerite", "Espelho de ponto", "Férias", "Benefícios"];
 
 const welcome: Message = {
   role: "bot",
   text: "Olá! Este é o atendimento de RH com dados reais, em teste. Para continuar, preciso confirmar sua identidade.\n\nQual é o seu CPF? (Se não souber, digite 'não sei'.)",
+  options: { kind: "unknown" },
 };
 
 function newSessionId() {
@@ -59,6 +67,7 @@ export default function Atendimento() {
           text: response.ok
             ? result.text
             : `⚠ ${result.error || "Não consegui concluir agora."}`,
+          options: response.ok ? result.options || null : null,
         },
       ]);
       if (Array.isArray(result.tickets)) setTickets(result.tickets);
@@ -209,6 +218,42 @@ export default function Atendimento() {
             )}
             <div ref={bottom} />
           </div>
+          {!sending &&
+            messages.length > 0 &&
+            messages[messages.length - 1].role === "bot" && (
+              <div
+                className="bot-options"
+                role="group"
+                aria-label="Opções rápidas"
+              >
+                {(() => {
+                  const options = messages[messages.length - 1].options;
+                  const choices = !options
+                    ? []
+                    : options.kind === "topics"
+                      ? TOPIC_CHOICES
+                      : options.kind === "yesno"
+                        ? ["Sim", "Não"]
+                        : options.kind === "month"
+                          ? options.choices
+                          : options.kind === "unknown"
+                            ? ["Não sei"]
+                            : [];
+                  return choices.map((choice) => (
+                    <button
+                      key={choice}
+                      type="button"
+                      onClick={() => send(choice)}
+                    >
+                      {choice}
+                    </button>
+                  ));
+                })()}
+                <button type="button" onClick={reset}>
+                  Reiniciar atendimento
+                </button>
+              </div>
+            )}
           <form
             className="bot-compose"
             onSubmit={(e) => {

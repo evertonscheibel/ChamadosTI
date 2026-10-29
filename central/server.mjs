@@ -158,6 +158,27 @@ async function startChallengeOrVerify(session) {
   session.stage = "challenge";
   return `Preciso confirmar mais um detalhe do seu cadastro. ${session.challenge[0].prompt}`;
 }
+function monthChoices() {
+  const now = new Date();
+  const choices = [];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    choices.push(
+      `${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`,
+    );
+  }
+  return choices;
+}
+function attendanceOptions(session) {
+  if (session.stage === "collect_cpf" || session.stage === "collect_matricula")
+    return { kind: "unknown" };
+  if (session.stage === "verified") {
+    if (session.awaitingMonthFor)
+      return { kind: "month", choices: monthChoices() };
+    return { kind: "topics" };
+  }
+  return null;
+}
 async function handleAttendanceMessage(session, message) {
   if (/^(reiniciar|recome[çc]ar|menu)$/i.test(message.trim())) {
     session.stage = "collect_cpf";
@@ -573,7 +594,7 @@ http
           );
         session.messages.push({ role: "user", content: message });
         logConversationMessage("chatbot", sessionId, "user", message);
-        const automated = (text) => {
+        const automated = (text, options = null) => {
           session.messages.push({ role: "assistant", content: text });
           logConversationMessage("chatbot", sessionId, "assistant", text);
           return json(res, 200, {
@@ -581,6 +602,7 @@ http
             ticket: null,
             tickets: session.tickets,
             automated: true,
+            options,
           });
         };
         // Enquanto a IA está no meio de uma troca (ex.: pediu confirmação
@@ -595,20 +617,21 @@ http
           if (category === "confirmacao") {
             session.identified = true;
             session.pendingTopic = null;
-            return automated(exampleFor(topic));
+            return automated(exampleFor(topic), { kind: "topics" });
           }
           if (category === "negacao") {
             session.pendingTopic = null;
-            return automated(identityDeclinedMessage);
+            return automated(identityDeclinedMessage, { kind: "topics" });
           }
         }
-        if (category === "saudacao") return automated(welcomeMessage);
+        if (category === "saudacao")
+          return automated(welcomeMessage, { kind: "topics" });
         if (["holerite", "ponto", "ferias", "beneficios"].includes(category)) {
           if (!session.identified) {
             session.pendingTopic = category;
-            return automated(identityPrompt);
+            return automated(identityPrompt, { kind: "yesno" });
           }
-          return automated(exampleFor(category));
+          return automated(exampleFor(category), { kind: "topics" });
         }
         // "duvida", "confirmacao"/"negacao" fora de contexto, ou categoria
         // desconhecida: caminho seguro é a IA completa.
@@ -638,6 +661,7 @@ http
           text: outcome.text,
           ticket,
           tickets: session.tickets,
+          options: ticket ? { kind: "topics" } : null,
         });
       }
       if (pathname === "/api/atendimento/message" && req.method === "POST") {
@@ -679,6 +703,7 @@ http
           stage: session.stage,
           ticket,
           tickets: session.tickets,
+          options: attendanceOptions(session),
         });
       }
       if (pathname.startsWith("/api/")) {
