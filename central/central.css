@@ -788,6 +788,110 @@ svg {
   color: #6f875c;
   white-space: nowrap;
 }
+.conversations-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.conversations-list {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  max-height: 72vh;
+  overflow-y: auto;
+}
+.conversation-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  width: 100%;
+  padding: 16px;
+  background: white;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  color: var(--green);
+}
+.conversation-row:last-child {
+  border-bottom: 0;
+}
+.conversation-row:hover {
+  background: #f7f9f3;
+}
+.conversation-row.selected {
+  background: #f1f4ec;
+}
+.conversation-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.conversation-row-main h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.conversation-tag {
+  font-size: 9px;
+  padding: 3px 7px;
+  border-radius: 20px;
+  background: #eee8dd;
+  color: #736452;
+  white-space: nowrap;
+}
+.conversation-tag-real {
+  background: #f6e6e2;
+  color: #841c11;
+}
+.conversation-row-main p {
+  font-size: 11px;
+  color: #6b7260;
+  margin: 5px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-row-main small {
+  font-size: 10px;
+  color: #95a08d;
+}
+.conversation-thread {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+}
+.conversation-thread-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.conversation-thread-header small {
+  display: block;
+  color: #8a8076;
+  margin-top: 3px;
+}
+.conversation-thread-scroll {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  max-height: 65vh;
+  overflow-y: auto;
+  background-color: #f1ede5;
+}
+.conversation-loading {
+  padding: 20px;
+  font-size: 12px;
+  color: #8a8076;
+}
 .requests-list {
   background: #fff;
   border: 1px solid var(--line);

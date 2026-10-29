@@ -21,7 +21,11 @@ CREATE INDEX IF NOT EXISTS requests_owner ON requests(user_id);
 CREATE INDEX IF NOT EXISTS messages_request ON messages(request_id);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS history_request ON history(request_id);
-CREATE INDEX IF NOT EXISTS attachments_request ON attachments(request_id);`);
+CREATE INDEX IF NOT EXISTS attachments_request ON attachments(request_id);
+CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('chatbot','atendimento')), session_id TEXT NOT NULL, candidate_name TEXT, candidate_identifier TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS conversation_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL REFERENCES conversations(id), role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS conversation_messages_conv ON conversation_messages(conversation_id);
+CREATE INDEX IF NOT EXISTS conversations_updated ON conversations(updated_at);`);
 function column(table, name, definition) {
   if (
     !db

@@ -92,3 +92,53 @@ test("explicit all-calculations release includes closed payroll only", async () 
   assert.match(pending.notice, /Não há folha mensal encerrada/);
   assert.deepEqual(calls, ["R044CAL"]);
 });
+test("the payroll event catalog is fetched once per code, not once per event row", async () => {
+  // Regressão de desempenho: um holerite com várias ocorrências do mesmo
+  // evento (ex.: horas extras em dias diferentes) não deve consultar a
+  // Senior uma vez por linha — só uma vez por código distinto.
+  const calls = [];
+  const source = {
+    configuration: () => ({
+      benefits: [],
+      releasedCalculations: ["*"],
+      eventTable: "1",
+    }),
+    links: async () => [
+      { NUMEMP: "7", TIPCOL: "1", NUMCAD: "1", id: "7:1:1", name: "Fictício" },
+    ],
+    query: async (table) => {
+      calls.push(table);
+      if (table === "R044CAL")
+        return [{ NUMEMP: "7", CODCAL: "99", SITCAL: "T" }];
+      if (table === "R046VER")
+        return [
+          {
+            NUMEMP: "7",
+            TIPCOL: "1",
+            NUMCAD: "1",
+            CODCAL: "99",
+            CODEVE: "10",
+            REFEVE: "1",
+            VALEVE: "100,00",
+          },
+          {
+            NUMEMP: "7",
+            TIPCOL: "1",
+            NUMCAD: "1",
+            CODCAL: "99",
+            CODEVE: "10",
+            REFEVE: "2",
+            VALEVE: "50,00",
+          },
+        ];
+      assert.equal(table, "R008EVC");
+      return [{ CODTAB: "1", CODEVE: "10", DESEVE: "Hora extra", TIPEVE: "1" }];
+    },
+  };
+  const result = await consult({}, "holerite", "2026-09", "", source);
+  assert.equal(result.events.length, 2);
+  assert.deepEqual(
+    calls.filter((t) => t === "R008EVC"),
+    ["R008EVC"],
+  );
+});

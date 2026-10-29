@@ -183,6 +183,38 @@ export function totals(events) {
     throw error("Totais monetários fora do limite.");
   return { earnings, deductions, net: earnings - deductions };
 }
+// Catálogo de eventos de folha (código -> descrição/tipo): referência
+// praticamente estática por tabela, reconsultada hoje uma vez por código
+// distinto em CADA holerite/benefícios. Guardar em memória evita repetir a
+// mesma consulta — a fila de query() é única para toda a aplicação, então
+// cada ida à Senior evitada aqui libera a fila mais rápido para todo mundo.
+// Esvazia ao reiniciar o processo; se o RH cadastrar um evento novo, a
+// primeira consulta que usá-lo busca de novo e passa a cachear.
+// Compartilhado entre chamadas reais (module-level query/configuration);
+// testes que injetam um "source" próprio para consult() devem usar códigos
+// de evento distintos dos já exercitados, já que o cache não os isola.
+const eventCatalogCache = new Map();
+async function eventCatalogEntry(code, { query, configuration }) {
+  const table = configuration().eventTable;
+  const cacheKey = `${table}:${code}`;
+  if (eventCatalogCache.has(cacheKey)) return eventCatalogCache.get(cacheKey);
+  const catalog = await query(
+    "R008EVC",
+    ["CODTAB", "CODEVE", "DESEVE", "TIPEVE"],
+    [
+      ["CODTAB", "=", table],
+      ["CODEVE", "=", code],
+    ],
+  );
+  if (
+    catalog.length !== 1 ||
+    Number(catalog[0].CODEVE) !== Number(code) ||
+    Number(catalog[0].CODTAB) !== Number(table)
+  )
+    throw error("Evento de folha não identificado com segurança.");
+  eventCatalogCache.set(cacheKey, catalog[0]);
+  return catalog[0];
+}
 const keys = ["NUMEMP", "TIPCOL", "NUMCAD"];
 export function assertScope(rows, link) {
   if (
@@ -355,25 +387,12 @@ export async function consult(
     throw error("Eventos fora do cálculo solicitado.");
   const events = [];
   for (const code of [...new Set(rows.map((row) => row.CODEVE))]) {
-    const catalog = await query(
-      "R008EVC",
-      ["CODTAB", "CODEVE", "DESEVE", "TIPEVE"],
-      [
-        ["CODTAB", "=", configuration().eventTable],
-        ["CODEVE", "=", code],
-      ],
-    );
-    if (
-      catalog.length !== 1 ||
-      Number(catalog[0].CODEVE) !== Number(code) ||
-      Number(catalog[0].CODTAB) !== Number(configuration().eventTable)
-    )
-      throw error("Evento de folha não identificado com segurança.");
+    const entry = await eventCatalogEntry(code, { query, configuration });
     for (const row of rows.filter((item) => item.CODEVE === code))
       events.push({
         code,
-        description: catalog[0].DESEVE,
-        type: catalog[0].TIPEVE,
+        description: entry.DESEVE,
+        type: entry.TIPEVE,
         reference: row.REFEVE,
         cents: cents(row.VALEVE),
       });

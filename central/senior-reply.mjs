@@ -1,4 +1,5 @@
 import { consult } from "./senior.mjs";
+import { normalizedCpf } from "./identity.mjs";
 
 const error = (message, status = 400) =>
   Object.assign(new Error(message), { status });
@@ -48,8 +49,16 @@ export function currentMonth() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function candidateUser(candidate) {
-  return { id: `chat:${candidate.NUMCAD}`, identifier: candidate.NUMCPF };
+export function candidateUser(candidate) {
+  // A Senior guarda NUMCPF sem zero à esquerda; links() (chamada por
+  // consult()) exige exatamente 11 dígitos, então é preciso normalizar
+  // aqui — o mesmo CPF que já validamos na verificação de identidade.
+  const cpf = normalizedCpf(candidate.NUMCPF);
+  if (!cpf)
+    throw Object.assign(new Error("CPF do cadastro inválido."), {
+      status: 502,
+    });
+  return { id: `chat:${candidate.NUMCAD}`, identifier: cpf };
 }
 
 function formatHolerite(result, month) {

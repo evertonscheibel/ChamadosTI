@@ -27,6 +27,11 @@ import {
 import { realReply, parseMonth } from "./senior-reply.mjs";
 import { normalizedCpf } from "./identity.mjs";
 import {
+  logConversationMessage,
+  listConversations,
+  conversationMessages,
+} from "./conversation-log.mjs";
+import {
   vacancyStatus,
   vacancyApplications,
   createVacancy,
@@ -567,8 +572,10 @@ http
             "Esta simulação atingiu o limite de mensagens. Reinicie a conversa.",
           );
         session.messages.push({ role: "user", content: message });
+        logConversationMessage("chatbot", sessionId, "user", message);
         const automated = (text) => {
           session.messages.push({ role: "assistant", content: text });
+          logConversationMessage("chatbot", sessionId, "assistant", text);
           return json(res, 200, {
             text,
             ticket: null,
@@ -615,6 +622,7 @@ http
           throw e;
         }
         session.messages.push({ role: "assistant", content: outcome.text });
+        logConversationMessage("chatbot", sessionId, "assistant", outcome.text);
         let ticket = null;
         if (outcome.request && session.tickets.length < 10) {
           ticket = {
@@ -646,8 +654,22 @@ http
             429,
             "Esta conversa atingiu o limite de mensagens. Reinicie o atendimento.",
           );
+        logConversationMessage("atendimento", sessionId, "user", message);
         const before = session.tickets.length;
         const replyText = await handleAttendanceMessage(session, message);
+        const candidate = session.candidate
+          ? {
+              name: session.candidate.NOMFUN,
+              identifier: session.matricula || session.cpf || null,
+            }
+          : null;
+        logConversationMessage(
+          "atendimento",
+          sessionId,
+          "assistant",
+          replyText,
+          candidate,
+        );
         const ticket =
           session.tickets.length > before
             ? session.tickets[session.tickets.length - 1]
@@ -661,6 +683,22 @@ http
       }
       if (pathname.startsWith("/api/")) {
         const user = auth(req);
+        if (pathname === "/api/conversations" && req.method === "GET") {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          return json(res, 200, { conversations: listConversations() });
+        }
+        if (
+          pathname.startsWith("/api/conversations/") &&
+          req.method === "GET"
+        ) {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          const id = decodeURIComponent(
+            pathname.slice("/api/conversations/".length),
+          );
+          if (!/^(chatbot|atendimento):[a-zA-Z0-9-]{8,64}$/.test(id))
+            fail(400, "Conversa inválida.");
+          return json(res, 200, { messages: conversationMessages(id) });
+        }
         if (pathname === "/api/portal-vacancies" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
           try {

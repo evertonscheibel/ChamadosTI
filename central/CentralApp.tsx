@@ -35,6 +35,7 @@ import SeniorSync from "./SeniorSync";
 import Management from "./Management";
 import IntegrationLinks from "./IntegrationLinks";
 import PortalVacancies from "./PortalVacancies";
+import Conversations from "./Conversations";
 
 type User = {
   id: string;
@@ -1137,7 +1138,7 @@ export default function CentralApp() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<
-    "home" | "requests" | "help" | "users" | "documents"
+    "home" | "requests" | "help" | "users" | "documents" | "conversations"
   >("home");
   const [requests, setRequests] = useState<Request[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -1230,7 +1231,8 @@ export default function CentralApp() {
     }
   }
   function navigate(
-    next: "home" | "requests" | "help" | "users" | "documents",
+    next:
+      "home" | "requests" | "help" | "users" | "documents" | "conversations",
   ) {
     setEmployeeFilter("");
     setView(next);
@@ -1375,6 +1377,14 @@ export default function CentralApp() {
                 Colaboradores
               </button>
             )}
+            {user?.role === "rh" && (
+              <button
+                className={view === "conversations" ? "nav-active" : ""}
+                onClick={() => navigate("conversations")}
+              >
+                Histórico de conversas
+              </button>
+            )}
           </nav>
           {user ? (
             <div className="header-user">
@@ -1429,6 +1439,8 @@ export default function CentralApp() {
           <SeniorDocuments />
         ) : view === "users" && user?.role === "rh" ? (
           <Employees />
+        ) : view === "conversations" && user?.role === "rh" ? (
+          <Conversations />
         ) : view === "help" ? (
           <Help />
         ) : view === "requests" && user ? (
