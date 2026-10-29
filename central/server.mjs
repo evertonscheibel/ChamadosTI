@@ -11,7 +11,12 @@ import { synchronization, startSynchronization } from "./senior-import.mjs";
 import { managementCsv } from "./management-export.mjs";
 import { managementReport } from "./indicators.mjs";
 import { initializeLinks, registerLink } from "./integration-links.mjs";
-import { reply as hermesReply, realSystemPrompt } from "./hermes-chat.mjs";
+import {
+  reply as hermesReply,
+  systemPrompt,
+  realSystemPrompt,
+} from "./hermes-chat.mjs";
+import { contextFor } from "./knowledge.mjs";
 import { classify as classifyChat } from "./chatbot-router.mjs";
 import {
   welcomeMessage,
@@ -120,6 +125,13 @@ function attendanceSession(id) {
   }
   session.updated = now;
   return session;
+}
+/** Acrescenta trechos de políticas internas relevantes à pergunta, se
+ * algum documento local tiver termos em comum com ela. Sem documentos ou
+ * sem relevância, devolve o prompt original sem alteração. */
+function withKnowledge(prompt, query) {
+  const context = contextFor(query);
+  return context ? `${prompt}\n\n${context}` : prompt;
 }
 function firstName(candidate) {
   return (candidate?.NOMFUN || "").trim().split(/\s+/)[0] || "";
@@ -263,7 +275,7 @@ async function handleAttendanceMessage(session, message) {
   let outcome;
   try {
     outcome = await hermesReply(session.messages, {
-      systemPrompt: realSystemPrompt,
+      systemPrompt: withKnowledge(realSystemPrompt, message),
     });
   } catch (e) {
     session.messages.pop();
@@ -638,7 +650,9 @@ http
         session.aiActive = true;
         let outcome;
         try {
-          outcome = await hermesReply(session.messages);
+          outcome = await hermesReply(session.messages, {
+            systemPrompt: withKnowledge(systemPrompt, message),
+          });
         } catch (e) {
           session.messages.pop();
           session.aiActive = false;
