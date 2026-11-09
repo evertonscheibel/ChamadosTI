@@ -49,6 +49,7 @@ import {
   portalVacancyById,
   decidePortalVacancy,
 } from "./portal-integration.mjs";
+import { verifySignature, sendMessage as sendChatwootMessage } from "./chatwoot-client.mjs";
 
 initializeLinks(db);
 
@@ -339,6 +340,26 @@ async function body(req) {
     fail(400, "Dados inválidos.");
   }
 }
+/** Mantém o texto bruto (necessário pra conferir a assinatura HMAC do
+ * Chatwoot, calculada em cima dos bytes originais) além do JSON já parseado. */
+async function rawBody(req) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 8 * 1024 * 1024) fail(413, "O tamanho máximo do envio é 5 MB.");
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString();
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      fail(400, "Dados inválidos.");
+    return { text, value };
+  } catch {
+    fail(400, "Dados inválidos.");
+  }
+}
 function text(value, max, name, required = true) {
   if (
     typeof value !== "string" ||
@@ -506,10 +527,14 @@ http
       } catch {
         fail(400, "Endereço inválido.");
       }
+      // Webhook do Chatwoot é servidor-a-servidor (não envia Origin de
+      // navegador) e se autentica pela assinatura HMAC checada na própria
+      // rota — não pelo cabeçalho Origin usado contra CSRF nas demais rotas.
       if (
         !["GET", "HEAD"].includes(req.method) &&
         req.headers.origin !== origin &&
-        req.headers.origin !== `http://localhost:${port}`
+        req.headers.origin !== `http://localhost:${port}` &&
+        pathname !== "/api/chatwoot/webhook"
       )
         fail(403, "Origem do envio não autorizada.");
       if (pathname === "/health")
@@ -735,6 +760,54 @@ http
           tickets: session.tickets,
           options: attendanceOptions(session),
         });
+      }
+      // =============================================================================
+      // Webhook do Agent Bot do Chatwoot (atendimento real via WhatsApp)
+      // =============================================================================
+      if (pathname === "/api/chatwoot/webhook" && req.method === "POST") {
+        const { text: raw, value: payload } = await rawBody(req);
+        if (
+          !verifySignature(
+            raw,
+            req.headers["x-chatwoot-timestamp"],
+            req.headers["x-chatwoot-signature"],
+          )
+        )
+          fail(401, "Assinatura inválida.");
+        // Só mensagem recebida do contato dispara o atendimento. Respostas do
+        // bot/atendente chegam como "outgoing" e notas internas como private.
+        // (O sender de contato no payload do Chatwoot não traz campo "type".)
+        if (
+          payload.event !== "message_created" ||
+          payload.message_type !== "incoming" ||
+          payload.private
+        )
+          return json(res, 200, { ok: true, skipped: true });
+        const conversationId = payload.conversation?.id;
+        const message = String(payload.content || "").slice(0, 500);
+        if (!conversationId || !message.trim())
+          return json(res, 200, { ok: true, skipped: true });
+        if (!chatAllowed(`cw-${conversationId}`))
+          return json(res, 200, { ok: true, skipped: true });
+        const sessionId = `cw-${conversationId}`;
+        const session = attendanceSession(sessionId);
+        logConversationMessage("atendimento", sessionId, "user", message);
+        const replyText = await handleAttendanceMessage(session, message);
+        const candidate = session.candidate
+          ? {
+              name: session.candidate.NOMFUN,
+              identifier: session.matricula || session.cpf || null,
+            }
+          : null;
+        logConversationMessage(
+          "atendimento",
+          sessionId,
+          "assistant",
+          replyText,
+          candidate,
+        );
+        await sendChatwootMessage(conversationId, replyText);
+        return json(res, 200, { ok: true });
       }
       if (pathname.startsWith("/api/")) {
         const user = auth(req);
@@ -1453,4 +1526,8 @@ http
       json(res, 500, { error: "Não foi possível concluir. Tente novamente." });
     }
   })
-  .listen(port, "127.0.0.1", () => console.log(`Central Frizelo: ${origin}`));
+  .listen(port, process.env.CENTRAL_HOST || "127.0.0.1", () =>
+    console.log(
+      `Central Frizelo: ${origin} (escutando em ${process.env.CENTRAL_HOST || "127.0.0.1"})`,
+    ),
+  );
