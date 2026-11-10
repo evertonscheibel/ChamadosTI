@@ -516,7 +516,34 @@ async function processChatwootMessage(conversationId, message) {
   session.origin = `chatwoot:${conversationId}`;
   logConversationMessage("atendimento", sessionId, "user", message);
   const ticketsBefore = session.tickets.length;
-  let replyText = await handleAttendanceMessage(session, message);
+  // Pedido explícito de pessoa: passa para o rodízio das atendentes.
+  if (/\b(atendente|humano|pessoa|falar com (o )?rh)\b/i.test(message)) {
+    const reply = "Certo! Vou te passar para uma atendente do RH. Ela continua a conversa por aqui.";
+    logConversationMessage("atendimento", sessionId, "assistant", reply);
+    await sendChatwootMessage(conversationId, reply);
+    await handToHuman(conversationId);
+    return;
+  }
+  // No Chatwoot não há tela de boas-vindas: na primeira mensagem que não
+  // seja já o CPF, o assistente se apresenta em vez de responder "Não entendi".
+  const firstContact = !session.greeted;
+  session.greeted = true;
+  let replyText =
+    firstContact &&
+    session.stage === "collect_cpf" &&
+    !normalizedCpf(message) &&
+    !looksUnknown(message)
+      ? "Olá! Sou o assistente do RH da Frizelo. Posso consultar seu holerite, espelho de ponto, férias e benefícios, ou abrir um chamado para o RH.\n\nPrimeiro preciso confirmar quem você é. Qual é o seu CPF? (só números; se não souber, digite 'não sei')\n\nSe preferir falar direto com uma pessoa, digite 'atendente'."
+      : await handleAttendanceMessage(session, message);
+  // Sem confirmar a identidade, aqui no chat do RH a saída é uma atendente.
+  if (session.stage === "blocked") {
+    replyText =
+      "Não consegui confirmar seu cadastro por aqui. Vou te passar para uma atendente do RH, que continua a conversa.";
+    logConversationMessage("atendimento", sessionId, "assistant", replyText);
+    await sendChatwootMessage(conversationId, replyText);
+    await handToHuman(conversationId);
+    return;
+  }
   const ticket =
     session.tickets.length > ticketsBefore ? session.tickets.at(-1) : null;
   if (ticket)
@@ -852,10 +879,14 @@ http
         // Só mensagem recebida do contato dispara o atendimento. Respostas do
         // bot/atendente chegam como "outgoing" e notas internas como private.
         // (O sender de contato no payload do Chatwoot não traz campo "type".)
+        // O Chatwoot manda ao bot toda mensagem da caixa, inclusive depois que
+        // a conversa passou para uma atendente ("open"): o bot só fala enquanto
+        // ela está "pending", que é a fila dele.
         if (
           payload.event !== "message_created" ||
           payload.message_type !== "incoming" ||
-          payload.private
+          payload.private ||
+          payload.conversation?.status !== "pending"
         )
           return json(res, 200, { ok: true, skipped: true });
         const conversationId = payload.conversation?.id;
