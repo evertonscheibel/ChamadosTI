@@ -49,23 +49,22 @@ export function verifySignature(rawBody, timestamp, signatureHeader) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** Posta uma mensagem de saída (outgoing) numa conversa do Chatwoot, como o Agent Bot. */
-export async function sendMessage(conversationId, content) {
+async function conversationApi(conversationId, path, method, body) {
   const config = configuration();
   if (!config.enabled) throw error("Integração Chatwoot não configurada.", 503);
   const endpoint = new URL(
-    `${config.base.replace(/\/+$/, "")}/api/v1/accounts/${config.accountId}/conversations/${conversationId}/messages`,
+    `${config.base.replace(/\/+$/, "")}/api/v1/accounts/${config.accountId}/conversations/${conversationId}${path}`,
   );
   let response;
   try {
     response = await fetch(endpoint, {
-      method: "POST",
+      method,
       headers: {
         "Content-Type": "application/json",
         api_access_token: config.botToken,
       },
-      body: JSON.stringify({ content, message_type: "outgoing" }),
-      signal: AbortSignal.timeout(15000),
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
     });
   } catch {
     throw error("Não foi possível falar com o Chatwoot agora.", 503);
@@ -73,4 +72,36 @@ export async function sendMessage(conversationId, content) {
   if (!response.ok)
     throw error(`O Chatwoot recusou a mensagem (${response.status}).`, 502);
   return response.json();
+}
+
+/** Posta uma mensagem de saída (outgoing) numa conversa do Chatwoot, como o Agent Bot. */
+export function sendMessage(conversationId, content) {
+  return conversationApi(conversationId, "/messages", "POST", {
+    content,
+    message_type: "outgoing",
+  });
+}
+
+/**
+ * Chamado aberto pelo bot: nota interna para a equipe, etiqueta
+ * "chamado_aberto" (somada às que já existirem) e a conversa volta a
+ * "open", o que tira do bot e entra no rodízio das atendentes.
+ */
+export async function handOffTicket(conversationId, ticket) {
+  await conversationApi(conversationId, "/messages", "POST", {
+    content: `Chamado ${ticket.protocol} aberto pelo assistente.\nAssunto: ${ticket.subject}\n\n${ticket.description}`,
+    message_type: "outgoing",
+    private: true,
+  });
+  const current = await conversationApi(conversationId, "/labels", "GET");
+  const labels = [...new Set([...(current.payload || []), "chamado_aberto"])];
+  await conversationApi(conversationId, "/labels", "POST", { labels });
+  await handToHuman(conversationId);
+}
+
+/** Tira a conversa do bot ("open"), o que a coloca no rodízio das atendentes. */
+export function handToHuman(conversationId) {
+  return conversationApi(conversationId, "/toggle_status", "POST", {
+    status: "open",
+  });
 }

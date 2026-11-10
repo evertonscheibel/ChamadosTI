@@ -84,3 +84,30 @@ test("sendMessage lança erro quando o Chatwoot recusa a mensagem", async () => 
     global.fetch = originalFetch;
   }
 });
+
+test("handOffTicket deixa nota interna, soma a etiqueta e devolve a conversa para humano", async () => {
+  const { handOffTicket } = await import("./chatwoot-client.mjs");
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), method: options.method, body: options.body && JSON.parse(options.body) });
+    const payload = String(url).endsWith("/labels") && options.method === "GET" ? { payload: ["rh"] } : {};
+    return { ok: true, json: async () => payload };
+  };
+  try {
+    await handOffTicket(7, { protocol: "FRZ-2026-000042", subject: "Dúvida", description: "Quero saber X" });
+    const base = "https://chatwoot.test/api/v1/accounts/1/conversations/7";
+    assert.deepEqual(calls.map((c) => `${c.method} ${c.url.replace(base, "")}`), [
+      "POST /messages",
+      "GET /labels",
+      "POST /labels",
+      "POST /toggle_status",
+    ]);
+    assert.equal(calls[0].body.private, true);
+    assert.match(calls[0].body.content, /FRZ-2026-000042/);
+    assert.deepEqual(calls[2].body.labels, ["rh", "chamado_aberto"]);
+    assert.deepEqual(calls[3].body, { status: "open" });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

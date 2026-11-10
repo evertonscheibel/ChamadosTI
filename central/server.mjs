@@ -49,7 +49,12 @@ import {
   portalVacancyById,
   decidePortalVacancy,
 } from "./portal-integration.mjs";
-import { verifySignature, sendMessage as sendChatwootMessage } from "./chatwoot-client.mjs";
+import {
+  verifySignature,
+  sendMessage as sendChatwootMessage,
+  handOffTicket,
+  handToHuman,
+} from "./chatwoot-client.mjs";
 
 initializeLinks(db);
 
@@ -293,12 +298,18 @@ async function handleAttendanceMessage(session, message) {
   session.messages.push({ role: "assistant", content: outcome.text });
   let ticketCreated = false;
   if (outcome.request && session.tickets.length < 10) {
-    session.tickets.push({
-      protocol: `AT-${String(session.tickets.length + 1).padStart(4, "0")}`,
-      subject: outcome.request.subject || "Dúvida de RH",
-      description: outcome.request.description || "",
-      status: "Aberto",
+    const subject = String(outcome.request.subject || "Dúvida de RH").slice(0, 160);
+    const description = String(outcome.request.description || message).slice(0, 10000);
+    let protocol;
+    transaction(() => {
+      const owner = colaboradorFromCandidate(session.candidate);
+      const created = insertRequest(owner, "outros", subject, description, {});
+      protocol = created.protocol;
+      history(created.id, owner, "Solicitação aberta pelo assistente de atendimento", "created", {
+        origem: session.origin || "atendimento",
+      });
     });
+    session.tickets.push({ protocol, subject, description, status: "Recebida" });
     session.aiActive = false;
     ticketCreated = true;
   }
@@ -497,6 +508,70 @@ function saveFiles(items, id, user, internal = 0) {
       new Date().toISOString(),
       internal,
     );
+}
+const chatwootQueues = new Map();
+async function processChatwootMessage(conversationId, message) {
+  const sessionId = `cw-${conversationId}`;
+  const session = attendanceSession(sessionId);
+  session.origin = `chatwoot:${conversationId}`;
+  logConversationMessage("atendimento", sessionId, "user", message);
+  const ticketsBefore = session.tickets.length;
+  let replyText = await handleAttendanceMessage(session, message);
+  const ticket =
+    session.tickets.length > ticketsBefore ? session.tickets.at(-1) : null;
+  if (ticket)
+    replyText += `\n\nAbri o chamado ${ticket.protocol} e uma atendente do RH vai continuar daqui.`;
+  const candidate = session.candidate
+    ? {
+        name: session.candidate.NOMFUN,
+        identifier: session.matricula || session.cpf || null,
+      }
+    : null;
+  logConversationMessage("atendimento", sessionId, "assistant", replyText, candidate);
+  await sendChatwootMessage(conversationId, replyText);
+  if (ticket) await handOffTicket(conversationId, ticket);
+}
+/** Grava uma solicitação com protocolo e histórico. Chamar dentro de transaction(). */
+function insertRequest(user, serviceId, subject, description, values) {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const number =
+    db.prepare("SELECT COUNT(*) total FROM requests").get().total + 1;
+  const protocol = `FRZ-${new Date().getFullYear()}-${String(number).padStart(6, "0")}`;
+  db.prepare(
+    "INSERT INTO requests (id,protocol,user_id,service_id,subject,description,fields,status,assigned_to,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(
+    id,
+    protocol,
+    user.id,
+    serviceId,
+    subject,
+    description,
+    JSON.stringify(values),
+    "Recebida",
+    null,
+    now,
+    now,
+  );
+  return { id, protocol };
+}
+/**
+ * Colaborador do central para quem a Senior acabou de confirmar a identidade.
+ * Se ainda não tem cadastro, cria igual ao importador da Senior (conta
+ * aguardando ativação), para o chamado ter dono e aparecer no painel do RH.
+ */
+function colaboradorFromCandidate(candidate) {
+  const cpf = normalizedCpf(candidate.NUMCPF);
+  if (!cpf) throw Object.assign(new Error("CPF do cadastro inválido."), { status: 502 });
+  const existing = db
+    .prepare("SELECT id,name FROM users WHERE identifier=?")
+    .get(cpf);
+  if (existing) return existing;
+  const user = { id: randomUUID(), name: candidate.NOMFUN.trim() };
+  db.prepare(
+    "INSERT INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)",
+  ).run(user.id, cpf, user.name, "colaborador", "Não informado", "Não informado", "!activation-required");
+  return user;
 }
 function transaction(fn) {
   db.exec("BEGIN IMMEDIATE");
@@ -789,25 +864,26 @@ http
           return json(res, 200, { ok: true, skipped: true });
         if (!chatAllowed(`cw-${conversationId}`))
           return json(res, 200, { ok: true, skipped: true });
-        const sessionId = `cw-${conversationId}`;
-        const session = attendanceSession(sessionId);
-        logConversationMessage("atendimento", sessionId, "user", message);
-        const replyText = await handleAttendanceMessage(session, message);
-        const candidate = session.candidate
-          ? {
-              name: session.candidate.NOMFUN,
-              identifier: session.matricula || session.cpf || null,
-            }
-          : null;
-        logConversationMessage(
-          "atendimento",
-          sessionId,
-          "assistant",
-          replyText,
-          candidate,
-        );
-        await sendChatwootMessage(conversationId, replyText);
-        return json(res, 200, { ok: true });
+        // O Chatwoot só espera 5 s pelo webhook e, se estourar, tira a conversa
+        // do bot. Consulta à Senior/IA passa disso: responde já e processa em
+        // seguida, uma mensagem por vez por conversa (a sessão tem estado).
+        const previous = chatwootQueues.get(conversationId) || Promise.resolve();
+        const next = previous
+          .then(() => processChatwootMessage(conversationId, message))
+          .catch(async (e) => {
+            console.error(`Chatwoot conversa ${conversationId}:`, e.message);
+            await sendChatwootMessage(
+              conversationId,
+              "Não consegui concluir seu atendimento agora. Uma atendente do RH vai continuar daqui.",
+            ).catch(() => {});
+            await handToHuman(conversationId).catch(() => {});
+          })
+          .finally(() => {
+            if (chatwootQueues.get(conversationId) === next)
+              chatwootQueues.delete(conversationId);
+          });
+        chatwootQueues.set(conversationId, next);
+        return json(res, 200, { ok: true, accepted: true });
       }
       if (pathname.startsWith("/api/")) {
         const user = auth(req);
@@ -1223,27 +1299,9 @@ http
           for (const field of service.fields)
             values[field] = text(input.fields?.[field], 200, field);
           const attachments = files(input.attachments);
-          const id = randomUUID();
-          const now = new Date().toISOString();
+          let id;
           transaction(() => {
-            const number =
-              db.prepare("SELECT COUNT(*) total FROM requests").get().total + 1;
-            const protocol = `FRZ-${new Date().getFullYear()}-${String(number).padStart(6, "0")}`;
-            db.prepare(
-              "INSERT INTO requests (id,protocol,user_id,service_id,subject,description,fields,status,assigned_to,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            ).run(
-              id,
-              protocol,
-              user.id,
-              service.id,
-              subject,
-              description,
-              JSON.stringify(values),
-              "Recebida",
-              null,
-              now,
-              now,
-            );
+            ({ id } = insertRequest(user, service.id, subject, description, values));
             history(id, user, "Solicitação recebida", "created", {
               attachments: attachments.length,
             });
