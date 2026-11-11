@@ -55,6 +55,7 @@ import {
   handOffTicket,
   handToHuman,
 } from "./chatwoot-client.mjs";
+import { recordAgentReply, closeFromChatwoot } from "./chatwoot-sync.mjs";
 
 initializeLinks(db);
 
@@ -305,6 +306,12 @@ async function handleAttendanceMessage(session, message) {
       const owner = colaboradorFromCandidate(session.candidate);
       const created = insertRequest(owner, "outros", subject, description, {});
       protocol = created.protocol;
+      const conversation = /^chatwoot:(\d+)$/.exec(session.origin || "")?.[1];
+      if (conversation)
+        db.prepare("UPDATE requests SET chatwoot_conversation_id=? WHERE id=?").run(
+          conversation,
+          created.id,
+        );
       history(created.id, owner, "Solicitação aberta pelo assistente de atendimento", "created", {
         origem: session.origin || "atendimento",
       });
@@ -879,6 +886,29 @@ http
         // Só mensagem recebida do contato dispara o atendimento. Respostas do
         // bot/atendente chegam como "outgoing" e notas internas como private.
         // (O sender de contato no payload do Chatwoot não traz campo "type".)
+        // Espelho no chamado: resposta pública de atendente e conversa resolvida.
+        if (
+          payload.event === "message_created" &&
+          payload.message_type === "outgoing" &&
+          !payload.private &&
+          payload.sender?.type === "user" &&
+          payload.conversation?.id
+        ) {
+          transaction(() =>
+            recordAgentReply(db, history, payload.conversation.id, payload.sender.name, payload.content),
+          );
+          return json(res, 200, { ok: true, mirrored: true });
+        }
+        if (
+          (payload.event === "conversation_resolved" ||
+            (payload.event === "conversation_status_changed" && payload.status === "resolved")) &&
+          payload.id
+        ) {
+          transaction(() =>
+            closeFromChatwoot(db, history, payload.id, payload.meta?.assignee?.name),
+          );
+          return json(res, 200, { ok: true, mirrored: true });
+        }
         // O Chatwoot manda ao bot toda mensagem da caixa, inclusive depois que
         // a conversa passou para uma atendente ("open"): o bot só fala enquanto
         // ela está "pending", que é a fila dele.

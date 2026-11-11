@@ -47,6 +47,7 @@ column("history", "kind", "TEXT NOT NULL DEFAULT 'legacy'");
 column("history", "data", "TEXT NOT NULL DEFAULT '{}'");
 column("history", "internal", "INTEGER NOT NULL DEFAULT 0");
 column("history", "actor_name", "TEXT");
+column("requests", "chatwoot_conversation_id", "TEXT");
 db.exec(
   `UPDATE requests SET closed_at=(SELECT MAX(created_at) FROM history WHERE request_id=requests.id AND event='Status alterado para Concluída') WHERE status='Concluída' AND closed_at IS NULL;`,
 );
