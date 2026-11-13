@@ -52,8 +52,23 @@ test("criticidade: verde, amarelo, laranja e vermelho", () => {
 
 test("opções do menu por número ou palavra", () => {
   assert.deepEqual(
-    ["1", "2.", "opção 3", "4)", "0", "10", "11", "12", "esqueci de bater o ponto", "quero meu holerite", "espelho", "ok"].map(parseOption),
-    [1, 2, 3, 4, 0, 10, 11, null, 3, 1, 2, null],
+    ["1", "2.", "opção 3", "4)", "0", "10", "15", "16", "esqueci de bater o ponto", "quero meu holerite", "espelho", "ok"].map(parseOption),
+    [1, 2, 3, 4, 0, 10, 15, null, 3, 1, 2, null],
+  );
+});
+
+test("temas mais pedidos no WhatsApp do RH caem na opção certa pela palavra", () => {
+  assert.deepEqual(
+    [
+      "meu filho nasceu, licença paternidade",
+      "incluir dependente no plano de saúde",
+      "quem vai pegar o sacolão",
+      "preciso remarcar o exame",
+      "sou da corretora do plano",
+      "ele está internado, sofreu acidente",
+      "atualizar meu pix",
+    ].map(parseOption),
+    [9, 6, 7, 10, 15, 4, 12],
   );
 });
 
@@ -62,9 +77,9 @@ test("fluxo: menu, opção inválida, assunto e abertura do chamado", () => {
   assert.equal(step.reply, menuText());
   step = nextStep(step.state, "quero saber");
   assert.match(step.reply, /Não entendi/);
-  step = nextStep(step.state, "7");
+  step = nextStep(step.state, "8");
   assert.match(step.reply, /Férias/);
-  assert.deepEqual(step.state, { stage: "tema", theme: 7, invalid: 0, data: {} });
+  assert.deepEqual(step.state, { stage: "tema", theme: 8, invalid: 0, data: {} });
   step = nextStep(step.state, "Everton, TI. 10/11 entrada 07:00");
   assert.equal(step.open, true);
   assert.equal(step.state.stage, "chamado");
@@ -73,7 +88,7 @@ test("fluxo: menu, opção inválida, assunto e abertura do chamado", () => {
 });
 
 test("cumprimento no lugar dos dados repete o pedido e não abre chamado", () => {
-  const state = { stage: "tema", theme: 11, invalid: 0 };
+  const state = { stage: "tema", theme: 14, invalid: 0 };
   for (const t of ["oi", "Olá!", "bom dia", "ok"]) {
     const step = nextStep(state, t);
     assert.equal(step.open, undefined, t);
@@ -98,8 +113,11 @@ test("modo teste filtra pelo telefone; 'todos' libera", () => {
 test("menu: holerite e espelho em PDF são as opções 1 e 2, direto para a identificação", () => {
   const menu = menuText();
   assert.match(menu, /Receber agora, em PDF\*\*\n1️⃣ Holerite\n2️⃣ Espelho de ponto/);
-  assert.match(menu, /🔟 Rescisão/);
-  assert.match(menu, /1️⃣1️⃣ Vagas e currículo/);
+  assert.match(menu, /6️⃣ Plano de saúde/);
+  assert.match(menu, /9️⃣ Licenças/);
+  assert.match(menu, /🔟 Agendar ou remarcar/);
+  assert.match(menu, /1️⃣4️⃣ Vagas e currículo/);
+  assert.match(menu, /1️⃣5️⃣ Empresa parceira/);
   assert.match(menu, /\*\*status\*\*/);
   for (const [option, theme] of [["1", 1], ["2", 2]]) {
     const step = nextStep({ stage: "menu" }, option);
