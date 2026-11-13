@@ -657,6 +657,41 @@ test("Central Frizelo: privacy, shared workflow, access codes and persistence", 
           row.data.to === "Alta",
       ),
     );
+    // Respostas prontas, entregas do WhatsApp, anexo na mensagem e histórico do colaborador.
+    assert.equal((await call("/reply-templates", { cookie: employee })).status, 403);
+    assert.equal((await call("/whatsapp/documents", { cookie: employee })).status, 403);
+    assert.deepEqual((await call("/whatsapp/documents", { cookie: rh })).body.documents, []);
+    const seeded = (await call("/reply-templates", { cookie: rh })).body.templates;
+    assert.ok(seeded.some((t) => t.title === "Atestado recebido"));
+    const saved = await call("/reply-templates", {
+      cookie: rh,
+      method: "POST",
+      data: { title: "Teste", body: "Olá, {nome}! Chamado {protocolo}." },
+    });
+    assert.equal(saved.status, 201);
+    assert.equal(
+      (await call(`/reply-templates/${saved.body.template.id}`, { cookie: rh, method: "DELETE", data: {} })).status,
+      200,
+    );
+    assert.equal((await call("/reply-templates", { cookie: rh })).body.templates.length, seeded.length);
+    const second = await call("/requests", {
+      cookie: employee,
+      method: "POST",
+      data: { service_id: "holerite", subject: "Outro pedido", description: "Dados fictícios.", fields: { "Mês de referência": "Outubro 2026" } },
+    });
+    assert.equal(second.status, 201);
+    const onlyFile = await call(`/requests/${second.body.request.id}/messages`, {
+      cookie: rh,
+      method: "POST",
+      data: { body: "", attachments: [file] },
+    });
+    assert.equal(onlyFile.status, 201);
+    const secondDetail = (await call(`/requests/${second.body.request.id}`, { cookie: rh })).body;
+    const sent = secondDetail.messages.at(-1);
+    assert.equal(sent.body, "📎 Segue o anexo.");
+    assert.equal(secondDetail.attachments.find((a) => a.message_id === sent.id)?.name, "documento-teste.pdf");
+    assert.deepEqual(secondDetail.related.requests.map((r) => r.id), [request.id]);
+    assert.equal((await call(`/requests/${second.body.request.id}`, { cookie: employee })).body.related, undefined);
     await call("/logout", { cookie: employee, method: "POST", data: {} });
     assert.equal((await call("/me", { cookie: employee })).status, 401);
   } finally {

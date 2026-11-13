@@ -34,6 +34,7 @@ import SeniorExport from "./SeniorExport";
 import SeniorSync from "./SeniorSync";
 import Management from "./Management";
 import { useTicketAlerts, AlertToasts, AlertSettings, WhatsappBanner, type WhatsappHealth } from "./TicketAlerts";
+import Deliveries from "./Deliveries";
 import RhQueue, { Channel, Deadline, displayName, type QueueTab } from "./RhQueue";
 
 type User = {
@@ -84,8 +85,13 @@ type Detail = {
     internal: number;
     data: { from?: string | null; to?: string | null; attachments?: number };
   }[];
-  attachments: { id: string; name: string; size: number; internal: number }[];
+  attachments: { id: string; name: string; size: number; internal: number; message_id: string | null }[];
+  related?: {
+    requests: { id: string; protocol: string; subject: string; status: string; created_at: string; rating: number | null }[];
+    documents: { id: number; kind: string; month: string; status: string; created_at: string }[];
+  };
 };
+type Template = { id: number; title: string; body: string };
 type Attachment = { name: string; type: string; data: string };
 const icons = {
   receipt: ReceiptText,
@@ -404,13 +410,17 @@ function RequestDetail({
   user,
   onBack,
   onUpdated,
+  onOpenRequest,
 }: {
   id: string;
   user: User;
   onBack: () => void;
   onUpdated: () => void;
+  onOpenRequest?: (id: string) => void;
 }) {
   const rh = user.role === "rh";
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [internal, setInternal] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [team, setTeam] = useState<{ id: string; name: string }[]>([]);
@@ -431,10 +441,14 @@ function RequestDetail({
     void load();
     // Mensagens novas do WhatsApp aparecem sem recarregar a página.
     const timer = window.setInterval(() => void load(), 20000);
-    if (rh)
+    if (rh) {
       api<{ team: typeof team }>("/team")
         .then((r) => setTeam(r.team))
         .catch(() => {});
+      api<{ templates: Template[] }>("/reply-templates")
+        .then((r) => setTemplates(r.templates))
+        .catch(() => {});
+    }
     return () => window.clearInterval(timer);
   }, [id]);
   const messageCount = detail?.messages.length || 0;
@@ -459,7 +473,7 @@ function RequestDetail({
   }
   async function send(e?: React.FormEvent) {
     e?.preventDefault();
-    if (!message.trim() || busy || !detail) return;
+    if ((!message.trim() && !files.length) || busy || !detail) return;
     setBusy(true);
     setError("");
     setWarning("");
@@ -486,6 +500,61 @@ function RequestDetail({
     } finally {
       setBusy(false);
     }
+  }
+  function applyTemplate(t: Template) {
+    if (!detail) return;
+    const first = displayName(detail.request).split(/\s+/)[0];
+    const name = /^\p{L}/u.test(first) ? first[0] + first.slice(1).toLowerCase() : "";
+    const body = t.body
+      .replaceAll("{protocolo}", detail.request.protocol)
+      .replaceAll("{nome}", name)
+      .replace(/^Olá, !/, "Olá!");
+    setMessage((current) => (current.trim() ? `${current.trimEnd()}\n\n${body}` : body));
+    setInternal(false);
+    setShowTemplates(false);
+  }
+  async function saveTemplate() {
+    const title = window.prompt("Nome da resposta pronta (ex.: Atestado recebido):");
+    if (!title?.trim() || !message.trim()) return;
+    try {
+      const { template } = await api<{ template: Template }>("/reply-templates", "POST", { title, body: message.trim() });
+      setTemplates((list) => [...list, template].sort((a, b) => a.title.localeCompare(b.title)));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  async function removeTemplate(t: Template) {
+    if (!window.confirm(`Apagar a resposta pronta "${t.title}"?`)) return;
+    await api(`/reply-templates/${t.id}`, "DELETE").catch(() => {});
+    setTemplates((list) => list.filter((item) => item.id !== t.id));
+  }
+  async function attach(input: FileList | null) {
+    setError("");
+    const selected = Array.from(input || []);
+    if (!selected.length) return;
+    if (files.length + selected.length > 3 || [...selected].reduce((sum, f) => sum + f.size, 0) > 5 * 1024 * 1024) {
+      setError("Anexe até 3 arquivos, com no máximo 5 MB no total.");
+      return;
+    }
+    if (selected.some((f) => !["application/pdf", "image/jpeg", "image/png"].includes(f.type))) {
+      setError("Use arquivos PDF, JPG ou PNG.");
+      return;
+    }
+    const read = await Promise.all(
+      selected.map(
+        (file) =>
+          new Promise<Attachment>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ name: file.name, type: file.type, data: String(reader.result).split(",")[1] });
+            reader.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
+            reader.readAsDataURL(file);
+          }),
+      ),
+    ).catch((e) => {
+      setError((e as Error).message);
+      return [];
+    });
+    setFiles([...files, ...read]);
   }
   if (!detail)
     return (
@@ -612,6 +681,18 @@ function RequestDetail({
                 <small>{formatDate(m.created_at)}</small>
               </header>
               <p className="preserve-lines">{m.body}</p>
+              {detail.attachments.some((f) => f.message_id === m.id) && (
+                <div className="bubble-files">
+                  {detail.attachments
+                    .filter((f) => f.message_id === m.id)
+                    .map((f) => (
+                      <a key={f.id} href={`/api/attachments/${f.id}`} target="_blank" rel="noreferrer">
+                        <Paperclip size={13} />
+                        {f.name}
+                      </a>
+                    ))}
+                </div>
+              )}
             </article>
           ))}
           </div>
@@ -641,9 +722,28 @@ function RequestDetail({
                   </span>
                 </div>
               )}
+              {showTemplates && (
+                <div className="templates" role="menu" aria-label="Respostas prontas">
+                  {templates.length === 0 && <p className="muted">Nenhuma resposta pronta ainda.</p>}
+                  {templates.map((t) => (
+                    <div className="template" key={t.id}>
+                      <button type="button" role="menuitem" onClick={() => applyTemplate(t)}>
+                        <strong>{t.title}</strong>
+                        <small>{t.body}</small>
+                      </button>
+                      <button type="button" className="template-remove" aria-label={`Apagar ${t.title}`} onClick={() => void removeTemplate(t)}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="template-save" disabled={!message.trim()} onClick={() => void saveTemplate()}>
+                    <Plus size={14} />
+                    {message.trim() ? "Salvar o texto atual como resposta pronta" : "Escreva um texto para salvá-lo como resposta pronta"}
+                  </button>
+                </div>
+              )}
               <textarea
                 aria-label={rh ? (internal ? "Nota interna" : "Resposta ao colaborador") : "Mensagem ao RH"}
-                required
                 rows={3}
                 maxLength={10000}
                 placeholder={internal ? "Anotação para a equipe…" : "Escreva a resposta…  (Ctrl+Enter envia)"}
@@ -653,9 +753,43 @@ function RequestDetail({
                   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void send();
                 }}
               />
+              {files.length > 0 && (
+                <div className="composer-files">
+                  {files.map((f) => (
+                    <span className="file-chip" key={f.name}>
+                      <Paperclip size={13} />
+                      {f.name}
+                      <button type="button" aria-label={`Remover ${f.name}`} onClick={() => setFiles(files.filter((item) => item !== f))}>
+                        <X size={13} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="composer-foot">
-                <Upload files={files} setFiles={setFiles} />
-                <button className="button primary" disabled={busy || !message.trim()}>
+                <div className="composer-tools">
+                  <label className="icon-text" title="Anexar PDF, JPG ou PNG (até 3 arquivos, 5 MB)">
+                    <Paperclip size={15} />
+                    Anexar
+                    <input
+                      type="file"
+                      hidden
+                      accept="application/pdf,image/jpeg,image/png"
+                      multiple
+                      onChange={(e) => {
+                        void attach(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  {rh && (
+                    <button type="button" className={`icon-text ${showTemplates ? "selected" : ""}`} aria-expanded={showTemplates} onClick={() => setShowTemplates(!showTemplates)}>
+                      <MessagesSquare size={15} />
+                      Respostas prontas
+                    </button>
+                  )}
+                </div>
+                <button className="button primary" disabled={busy || (!message.trim() && !files.length)}>
                   {busy ? "Enviando…" : internal ? "Salvar nota" : "Enviar"}
                   <Send size={15} />
                 </button>
@@ -718,6 +852,40 @@ function RequestDetail({
                     {Math.ceil(f.size / 1024)} KB
                   </small>
                 </a>
+              ))}
+            </section>
+          )}
+          {rh && detail.related && (detail.related.requests.length > 0 || detail.related.documents.length > 0) && (
+            <section className="side-card side-related">
+              <h2>Histórico do colaborador</h2>
+              {detail.related.requests.map((r) => (
+                <button key={r.id} className="related-item" onClick={() => onOpenRequest?.(r.id)}>
+                  <span>
+                    <strong>{r.protocol}</strong>
+                    <small>
+                      {r.subject} · {new Date(r.created_at).toLocaleDateString("pt-BR")}
+                    </small>
+                  </span>
+                  <span className={`pill pill-${r.status.toLowerCase().normalize("NFD").replace(/[^a-z]/g, "")}`}>
+                    {r.status === "Concluída" && r.rating ? `★ ${r.rating}` : r.status}
+                  </span>
+                </button>
+              ))}
+              {detail.related.documents.map((d) => (
+                <div key={`doc-${d.id}`} className="related-item related-doc">
+                  <span>
+                    <strong>
+                      <FileText size={13} />
+                      {d.kind === "holerite" ? "Holerite" : "Espelho de ponto"} {d.month.slice(5, 7)}/{d.month.slice(0, 4)}
+                    </strong>
+                    <small>
+                      PDF pelo WhatsApp · {new Date(d.created_at).toLocaleDateString("pt-BR")}
+                    </small>
+                  </span>
+                  <small className={d.status === "enviado" ? "related-ok" : "related-fail"}>
+                    {d.status === "enviado" ? "Enviado" : d.status === "sem dados" ? "Sem dados" : "Falhou"}
+                  </small>
+                </div>
               ))}
             </section>
           )}
@@ -1053,7 +1221,7 @@ export default function CentralApp() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<
-    "home" | "requests" | "help" | "users" | "documents"
+    "home" | "requests" | "help" | "users" | "documents" | "deliveries"
   >("home");
   const [requests, setRequests] = useState<Request[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -1160,7 +1328,7 @@ export default function CentralApp() {
   }
   function navigate(
     next:
-      "home" | "requests" | "help" | "users" | "documents",
+      "home" | "requests" | "help" | "users" | "documents" | "deliveries",
   ) {
     setView(next);
     setActive(null);
@@ -1246,6 +1414,12 @@ export default function CentralApp() {
                   onClick={() => navigate("home")}
                 >
                   Indicadores
+                </button>
+                <button
+                  className={view === "deliveries" ? "nav-active" : ""}
+                  onClick={() => navigate("deliveries")}
+                >
+                  Entregas
                 </button>
                 <button
                   className={view === "users" ? "nav-active" : ""}
@@ -1337,9 +1511,12 @@ export default function CentralApp() {
               setView("requests");
             }}
             onUpdated={() => void refresh()}
+            onOpenRequest={(next) => setActive(next)}
           />
         ) : view === "documents" && user ? (
           <SeniorDocuments />
+        ) : view === "deliveries" && user?.role === "rh" ? (
+          <Deliveries />
         ) : view === "users" && user?.role === "rh" ? (
           <Employees />
         ) : view === "help" ? (
