@@ -58,6 +58,9 @@ column("whatsapp_documents", "name", "TEXT");
 column("requests", "rating", "INTEGER");
 column("requests", "rated_at", "TEXT");
 column("attachments", "message_id", "TEXT");
+column("requests", "alert_level", "INTEGER");
+column("requests", "awaiting_since", "TEXT");
+column("requests", "reminder_sent_at", "TEXT");
 // Respostas prontas do RH. {nome} e {protocolo} são trocados na hora de usar.
 db.exec(
   "CREATE TABLE IF NOT EXISTS reply_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, body TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL)",

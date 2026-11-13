@@ -3614,3 +3614,153 @@ button.related-item:hover {
     grid-column: 1 / -1;
   }
 }
+.icon-text-strong {
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-weight: 600;
+}
+
+/* ===== Fila v3: seleção, ações rápidas e em lote ===== */
+.queue-row.v3 {
+  grid-template-columns: 4px 22px minmax(0, 1.5fr) minmax(0, 1.3fr) 170px 140px 170px 18px;
+  grid-template-areas: "stripe check main person status owner deadline chev";
+  gap: 0 14px;
+  cursor: pointer;
+}
+.queue-row.v3 > .q-stripe { grid-area: stripe; display: block; }
+.queue-row.v3 > .q-check { grid-area: check; display: flex; align-items: center; }
+.queue-row.v3 > .q-main { grid-area: main; display: flex; }
+.queue-row.v3 > .q-person { grid-area: person; display: flex; }
+.queue-row.v3 > .q-status { grid-area: status; display: block; }
+.queue-row.v3 > .q-owner { grid-area: owner; display: block; }
+.queue-row.v3 > .q-deadline { grid-area: deadline; display: block; }
+.queue-row.v3 > .q-chev { grid-area: chev; display: block; }
+.queue-row.v3.queue-header > * { display: block; }
+.queue-row.v3.queue-header > .q-check { display: flex; }
+.queue-row.v3:hover:not(.queue-header) {
+  background: var(--surface-2);
+}
+.queue-row.v3:hover .queue-chevron {
+  color: var(--brand);
+  transform: translateX(2px);
+}
+.queue-row.v3.selected {
+  background: var(--brand-tint);
+}
+.q-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+button.q-main {
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0;
+  background: none;
+  border-radius: 4px;
+  color: var(--ink);
+  text-align: left;
+  min-width: 0;
+  width: 100%;
+}
+button.q-main strong {
+  max-width: 100%;
+}
+button.q-main:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+.quick-assign {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px dashed #cfc6bc;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 600;
+}
+.quick-assign:hover,
+.queue-row.v3:hover .quick-assign {
+  border-style: solid;
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.bulk-bar {
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.bulk-bar strong {
+  margin-right: 6px;
+  font-size: 13.5px;
+}
+.bulk-bar .button {
+  padding: 7px 12px;
+  gap: 6px;
+  font-size: 13px;
+}
+.bulk-bar select {
+  width: auto;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.bulk-bar .icon-text {
+  color: #e9e2dc;
+}
+.bulk-bar .icon-text:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.bulk-bar .muted {
+  color: #cfc6bc;
+  font-size: 12.5px;
+}
+@media (max-width: 1100px) {
+  .queue-row.v3 {
+    grid-template-columns: 4px 22px minmax(0, 1.4fr) minmax(0, 1.2fr) 160px 150px 18px;
+    grid-template-areas: "stripe check main person status deadline chev";
+  }
+  .queue-row.v3 > .q-owner {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .queue-row.v3 {
+    grid-template-columns: 4px 22px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "stripe check main status"
+      "stripe check person person"
+      "stripe check deadline owner";
+    gap: 6px 10px;
+  }
+  .queue-row.v3 > .q-owner {
+    display: block;
+    justify-self: end;
+  }
+  .queue-row.v3 > .q-owner:not(:has(.quick-assign)) {
+    display: none;
+  }
+  .queue-row.v3 > .q-chev {
+    display: none;
+  }
+  .queue-row.v3.queue-header {
+    display: none;
+  }
+}

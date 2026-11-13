@@ -1241,7 +1241,10 @@ export default function CentralApp() {
   const [success, setSuccess] = useState<Request | null>(null);
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   // Só compara depois da primeira carga real da fila (antes dela a lista está vazia).
-  const ticketAlerts = useTicketAlerts(requests, user?.role === "rh" && syncedAt !== null);
+  const ticketAlerts = useTicketAlerts(requests, user?.role === "rh" && syncedAt !== null, (id) => {
+    setView("requests");
+    setActive(id);
+  });
   const [whatsappHealth, setWhatsappHealth] = useState<WhatsappHealth | null>(null);
   async function refresh() {
     try {
@@ -1531,7 +1534,15 @@ export default function CentralApp() {
             onRefresh={() => void refresh()}
             syncedAt={syncedAt}
             error={error}
-            tools={<AlertSettings sound={ticketAlerts.sound} toggleSound={ticketAlerts.toggleSound} />}
+            tools={
+              <AlertSettings
+                sound={ticketAlerts.sound}
+                toggleSound={ticketAlerts.toggleSound}
+                reminder={ticketAlerts.reminder}
+                toggleReminder={ticketAlerts.toggleReminder}
+                test={ticketAlerts.test}
+              />
+            }
             banner={<WhatsappBanner health={whatsappHealth} />}
           />
         ) : view === "requests" && user ? (

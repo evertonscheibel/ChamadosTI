@@ -1,6 +1,7 @@
-import React, { useState } from "react";
-import { RefreshCw, Search, ChevronRight, MessageCircle, Globe, Inbox } from "lucide-react";
-import { services } from "./catalog.mjs";
+import React, { useEffect, useState } from "react";
+import { RefreshCw, Search, ChevronRight, MessageCircle, Globe, Inbox, Headphones, X } from "lucide-react";
+import { services, statuses } from "./catalog.mjs";
+import { api } from "./api";
 
 export type QueueTab = "abertos" | "meus" | "sem" | "atrasados" | "concluidos";
 export type QueueRequest = {
@@ -101,6 +102,36 @@ export default function RhQueue({
 }) {
   const [search, setSearch] = useState("");
   const [theme, setTheme] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [team, setTeam] = useState<{ id: string; name: string }[]>([]);
+  const [working, setWorking] = useState(false);
+  const [actionError, setActionError] = useState("");
+  useEffect(() => {
+    api<{ team: { id: string; name: string }[] }>("/team")
+      .then((r) => setTeam(r.team))
+      .catch(() => {});
+  }, []);
+  useEffect(() => setSelected(new Set()), [tab]);
+  /** Ação rápida em um ou vários chamados; o servidor registra cada mudança no histórico. */
+  async function apply(ids: string[], patch: Record<string, unknown>) {
+    if (!ids.length || working) return;
+    setWorking(true);
+    setActionError("");
+    const failures: string[] = [];
+    const warnings: string[] = [];
+    for (const id of ids) {
+      try {
+        const r = await api<{ warning?: string }>(`/requests/${id}`, "PATCH", patch);
+        if (r?.warning) warnings.push(r.warning);
+      } catch (e) {
+        failures.push(`${requests.find((r) => r.id === id)?.protocol}: ${(e as Error).message}`);
+      }
+    }
+    setWorking(false);
+    setSelected(new Set());
+    setActionError([...failures, ...new Set(warnings)].join(" · "));
+    onRefresh();
+  }
   const tabs: [QueueTab, string, (r: QueueRequest) => boolean][] = [
     ["abertos", "Abertos", open],
     ["meus", "Minha fila", (r) => open(r) && r.assigned_to === userId],
@@ -118,6 +149,15 @@ export default function RhQueue({
       tab === "concluidos" ? time(b.closed_at) - time(a.closed_at) : time(a.due_at) - time(b.due_at),
     );
   const themes = services.filter((s) => requests.some((r) => r.service_id === s.id));
+  const selectable = tab !== "concluidos";
+  const chosen = rows.filter((r) => selected.has(r.id)).map((r) => r.id);
+  const toggle = (id: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   return (
     <section className="queue">
       <div className="queue-head">
@@ -171,15 +211,69 @@ export default function RhQueue({
           ))}
         </select>
       </div>
+      {actionError && <div className="notice" role="alert">{actionError}</div>}
+      {chosen.length > 0 && (
+        <div className="bulk-bar" role="toolbar" aria-label="Ações nos chamados selecionados">
+          <strong>
+            {chosen.length} {chosen.length === 1 ? "selecionado" : "selecionados"}
+          </strong>
+          <button className="button secondary" disabled={working} onClick={() => void apply(chosen, { assign: true })}>
+            <Headphones size={15} />
+            Assumir
+          </button>
+          <select
+            aria-label="Mudar status dos selecionados"
+            disabled={working}
+            value=""
+            onChange={(e) => e.target.value && void apply(chosen, { status: e.target.value })}
+          >
+            <option value="">Mudar status…</option>
+            {statuses
+              .filter((st) => st !== "Concluída")
+              .map((st) => (
+                <option key={st}>{st}</option>
+              ))}
+          </select>
+          <select
+            aria-label="Passar os selecionados para"
+            disabled={working}
+            value=""
+            onChange={(e) => e.target.value && void apply(chosen, { assigned_to: e.target.value === "-" ? null : e.target.value })}
+          >
+            <option value="">Passar para…</option>
+            {team.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+            <option value="-">Ninguém</option>
+          </select>
+          <button className="icon-text" onClick={() => setSelected(new Set())}>
+            <X size={15} />
+            Limpar
+          </button>
+          {working && <span className="muted">Aplicando…</span>}
+        </div>
+      )}
       <div className="queue-table" role="list">
-        <div className="queue-row queue-header" aria-hidden="true">
-          <span />
-          <span>Chamado</span>
-          <span>Colaborador</span>
-          <span>Status</span>
-          <span>Responsável</span>
-          <span>Prazo</span>
-          <span />
+        <div className="queue-row v3 queue-header">
+          <span className="q-stripe" />
+          <span className="q-check">
+            {selectable && rows.length > 0 && (
+              <input
+                type="checkbox"
+                aria-label="Selecionar todos os chamados da lista"
+                checked={chosen.length === rows.length}
+                onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())}
+              />
+            )}
+          </span>
+          <span className="q-main">Chamado</span>
+          <span className="q-person">Colaborador</span>
+          <span className="q-status">Status</span>
+          <span className="q-owner">Responsável</span>
+          <span className="q-deadline">Prazo</span>
+          <span className="q-chev" />
         </div>
         {rows.length === 0 ? (
           <div className="queue-empty">
@@ -189,35 +283,62 @@ export default function RhQueue({
           </div>
         ) : (
           rows.map((r) => (
-            <button
+            <div
               key={r.id}
               role="listitem"
-              className={`queue-row level-${open(r) ? r.sla?.level || "none" : "done"}`}
+              className={`queue-row v3 level-${open(r) ? r.sla?.level || "none" : "done"} ${selected.has(r.id) ? "selected" : ""}`}
               onClick={() => onOpen(r.id)}
             >
-              <span className="queue-stripe" />
-              <span className="queue-cell-main">
+              <span className="queue-stripe q-stripe" />
+              <span className="q-check" onClick={(e) => e.stopPropagation()}>
+                {selectable && (
+                  <input
+                    type="checkbox"
+                    aria-label={`Selecionar ${r.protocol}`}
+                    checked={selected.has(r.id)}
+                    onChange={() => toggle(r.id)}
+                  />
+                )}
+              </span>
+              <button className="queue-cell-main q-main" onClick={(e) => (e.stopPropagation(), onOpen(r.id))}>
                 <small>{r.protocol}</small>
                 <strong>{r.subject}</strong>
-              </span>
-              <span className="queue-cell-person">
+              </button>
+              <span className="queue-cell-person q-person">
                 <strong>{displayName(r)}</strong>
                 <span>
                   <Channel request={r} />
                   {r.department && r.department !== "Não informado" ? r.department : ""}
                 </span>
               </span>
-              <span>
+              <span className="q-status">
                 <span className={`pill pill-${r.status.normalize("NFD").replace(/[^a-zA-Z]/g, "").toLowerCase()}`}>{r.status}</span>
               </span>
-              <span className={r.assigned_name ? "queue-owner" : "queue-owner none"}>
-                {r.assigned_name ? r.assigned_name.split(" ").slice(0, 2).join(" ") : "Ninguém"}
+              <span className={`q-owner ${r.assigned_name ? "queue-owner" : "queue-owner none"}`}>
+                {r.assigned_name ? (
+                  r.assigned_name.split(" ").slice(0, 2).join(" ")
+                ) : open(r) ? (
+                  <button
+                    className="quick-assign"
+                    disabled={working}
+                    title="Assumir este chamado"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void apply([r.id], { assign: true, ...(r.status === "Recebida" ? { status: "Em atendimento" } : {}) });
+                    }}
+                  >
+                    <Headphones size={13} />
+                    Assumir
+                  </button>
+                ) : (
+                  "Ninguém"
+                )}
               </span>
-              <span>
+              <span className="q-deadline">
                 <Deadline request={r} />
               </span>
-              <ChevronRight size={18} className="queue-chevron" />
-            </button>
+              <ChevronRight size={18} className="queue-chevron q-chev" />
+            </div>
           ))
         )}
       </div>

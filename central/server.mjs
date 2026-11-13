@@ -60,6 +60,7 @@ import {
 } from "./chatwoot-client.mjs";
 import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
 import { startWahaWatchdog } from "./waha-watchdog.mjs";
+import { createEmailAlerts } from "./email-alerts.mjs";
 import {
   whatsappConfig,
   phoneAllowed,
@@ -80,6 +81,9 @@ import {
   rememberedText,
   ticketTheme,
   withinOfficeHours,
+  businessElapsed,
+  awaitingEmployeeText,
+  awaitingReminderText,
 } from "./whatsapp-rh.mjs";
 import { holeritePdf, espelhoPdf } from "./senior-documents.mjs";
 import { situationNames } from "./senior.mjs";
@@ -874,6 +878,7 @@ async function processWhatsappRh(payload, config) {
       saveWhatsappState(conversationId, step.state, phone, request.id);
       return request;
     });
+    emailNewRequest(created.id);
     await sendChatwootMessage(
       conversationId,
       ticketOpenedText(created.protocol, step.state.theme ?? 0, {
@@ -887,6 +892,76 @@ async function processWhatsappRh(payload, config) {
   saveWhatsappState(conversationId, step.state, phone, null);
   if (step.reply) await sendChatwootMessage(conversationId, step.reply);
 }
+// --- Avisos automáticos -------------------------------------------------------
+const LEVEL_RANK = { verde: 0, amarelo: 1, laranja: 2, vermelho: 3 };
+/** Dados mínimos do chamado para o e-mail (sem o texto do chamado). */
+function alertRequest(id) {
+  const row = db
+    .prepare(
+      "SELECT r.protocol,r.subject,r.due_at,r.fields,u.name requester_name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?",
+    )
+    .get(id);
+  if (!row) return null;
+  const whatsapp = JSON.parse(row.fields || "{}").Origem === "WhatsApp";
+  return {
+    ...row,
+    requester_name: whatsapp ? row.requester_name.replace(/^WhatsApp\s+/i, "") : row.requester_name,
+    channel: whatsapp ? "WhatsApp" : "Portal",
+  };
+}
+function emailNewRequest(id) {
+  const request = alertRequest(id);
+  if (request) void emailAlerts.notify(request, "novo");
+}
+/** Conversa do WhatsApp ativa para este chamado (o atendente virtual cuida dela). */
+const whatsappConversation = (request) =>
+  request.chatwoot_conversation_id &&
+  db.prepare("SELECT 1 FROM whatsapp_rh WHERE conversation_id=?").get(String(request.chatwoot_conversation_id))
+    ? String(request.chatwoot_conversation_id)
+    : null;
+/**
+ * A cada 5 minutos: e-mail quando um chamado entra em laranja ou vermelho, e
+ * lembrete no WhatsApp para quem não respondeu o RH em 2 dias úteis.
+ */
+async function automaticAlerts(now = Date.now()) {
+  const { holidays, officeHours } = whatsappConfig();
+  const open = db
+    .prepare("SELECT id,protocol,created_at,due_at,alert_level,status,awaiting_since,reminder_sent_at,chatwoot_conversation_id FROM requests WHERE status<>'Concluída'")
+    .all();
+  for (const request of open) {
+    const sla = request.due_at ? slaStatus(request.created_at, request.due_at, now, holidays) : null;
+    const rank = sla ? LEVEL_RANK[sla.level] : -1;
+    if (request.alert_level === null) {
+      // Primeira verificação deste chamado: só memoriza (não avisa do que já estava assim).
+      db.prepare("UPDATE requests SET alert_level=? WHERE id=?").run(rank, request.id);
+    } else if (rank > request.alert_level) {
+      db.prepare("UPDATE requests SET alert_level=? WHERE id=?").run(rank, request.id);
+      if (rank >= LEVEL_RANK.laranja) {
+        const data = alertRequest(request.id);
+        if (data) void emailAlerts.notify(data, sla.level);
+      }
+    }
+    if (
+      request.status === "Aguardando colaborador" &&
+      request.awaiting_since &&
+      !request.reminder_sent_at &&
+      businessElapsed(Date.parse(request.awaiting_since), now, holidays) >= 48 * 3600000 &&
+      withinOfficeHours(now, { officeHours, holidays })
+    ) {
+      const conversationId = whatsappConversation(request);
+      if (!conversationId) continue;
+      db.prepare("UPDATE requests SET reminder_sent_at=? WHERE id=?").run(new Date(now).toISOString(), request.id);
+      try {
+        await sendChatwootMessage(conversationId, awaitingReminderText(request.protocol));
+        const owner = db.prepare("SELECT u.id,u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?").get(request.id);
+        transaction(() => history(request.id, owner, "Lembrete enviado ao colaborador pelo WhatsApp (2 dias sem resposta)", "reminder", {}, 1));
+      } catch (e) {
+        console.error(`Lembrete do chamado ${request.protocol}:`, e.message);
+      }
+    }
+  }
+}
+
 /** Chamado do WhatsApp concluído na central: avisa o colaborador e encerra a conversa. */
 async function closeWhatsappTicket(request) {
   const conversationId = request.chatwoot_conversation_id;
@@ -1749,6 +1824,7 @@ http
             });
             saveFiles(attachments, id, user);
           });
+          emailNewRequest(id);
           return json(res, 201, {
             request: list(user).find((r) => r.id === id),
           });
@@ -2029,6 +2105,24 @@ http
                 id,
               );
             });
+            // Aguardando colaborador: o WhatsApp avisa que o RH precisa de uma resposta;
+            // depois de 2 dias úteis sem resposta, sai um lembrete (automaticAlerts).
+            if (input.status === "Aguardando colaborador" && request.status !== "Aguardando colaborador") {
+              db.prepare("UPDATE requests SET awaiting_since=?,reminder_sent_at=NULL WHERE id=?").run(new Date().toISOString(), id);
+              const conversationId = whatsappConversation(request);
+              if (conversationId)
+                try {
+                  await sendChatwootMessage(conversationId, awaitingEmployeeText(request.protocol));
+                } catch (e) {
+                  transaction(() =>
+                    history(id, user, "Falha ao avisar o colaborador pelo WhatsApp", "whatsapp_error", { erro: e.message }, 1),
+                  );
+                  return json(res, 200, {
+                    ok: true,
+                    warning: "Status alterado, mas não foi possível avisar o colaborador pelo WhatsApp.",
+                  });
+                }
+            }
             // Concluído na central: o colaborador do WhatsApp recebe o aviso e a conversa é encerrada.
             if (input.status === "Concluída" && request.status !== "Concluída") {
               try {
@@ -2092,6 +2186,13 @@ http
   );
 // Vigia da sessão do WhatsApp (WAHA): reinicia sozinho quando ela trava.
 const wahaWatchdog = startWahaWatchdog({ chatwootBase: chatwootConfiguration().base });
+const emailAlerts = createEmailAlerts();
+console.log(emailAlerts.enabled ? "Avisos por e-mail ligados." : "Avisos por e-mail desligados (configure SMTP_HOST e ALERTA_EMAILS no .env.local).");
+if (process.env.CENTRAL_AVISOS !== "off") {
+  const alertTimer = setInterval(() => void automaticAlerts().catch((e) => console.error("Avisos automáticos:", e.message)), 5 * 60000);
+  alertTimer.unref?.();
+  setTimeout(() => void automaticAlerts().catch((e) => console.error("Avisos automáticos:", e.message)), 20000).unref?.();
+}
 console.log(
   wahaWatchdog.getHealth().enabled
     ? "Vigia do WhatsApp (WAHA) ligado."

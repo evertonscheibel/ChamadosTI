@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "lucide-react": "^0.554.0",
+    "nodemailer": "10.3.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "xml2js": "^0.6.2"

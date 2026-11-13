@@ -207,6 +207,12 @@ export function ticketClosedText(protocol, { survey = false } = {}) {
     return `${text}\n\nComo foi o atendimento? Responda com uma nota de **1** a **5**\n(1 = muito ruim · 5 = ótimo).\n${SIGNATURE}`;
   return `${text}\nSe precisar de algo mais, é só mandar uma nova mensagem por aqui.\n${SIGNATURE}`;
 }
+export function awaitingEmployeeText(protocol) {
+  return `📝 O RH precisa de uma informação sua para continuar o **chamado nº ${protocol}**.\nResponda por aqui para o atendimento seguir.\n${SIGNATURE}`;
+}
+export function awaitingReminderText(protocol) {
+  return `⏰ Lembrete: o RH ainda aguarda a sua resposta no **chamado nº ${protocol}**.\nÉ só responder por aqui para o atendimento continuar.\n${SIGNATURE}`;
+}
 export function ratingThanksText(rating) {
   return `${rating >= 4 ? "Que bom! " : ""}Obrigado pela avaliação. 🙏\nSe precisar de algo mais, é só mandar uma nova mensagem por aqui.`;
 }
