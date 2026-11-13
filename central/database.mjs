@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS conversation_messages (id INTEGER PRIMARY KEY AUTOINC
 CREATE INDEX IF NOT EXISTS conversation_messages_conv ON conversation_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS conversations_updated ON conversations(updated_at);
 CREATE TABLE IF NOT EXISTS ai_answers (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('chatbot','atendimento')), rag_hit INTEGER NOT NULL, ticket_created INTEGER NOT NULL, created_at TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS ai_answers_created ON ai_answers(created_at);`);
+CREATE INDEX IF NOT EXISTS ai_answers_created ON ai_answers(created_at);
+CREATE TABLE IF NOT EXISTS whatsapp_rh (conversation_id TEXT PRIMARY KEY, stage TEXT NOT NULL, theme INTEGER, invalid INTEGER NOT NULL DEFAULT 0, request_id TEXT REFERENCES requests(id), phone TEXT, updated_at TEXT NOT NULL);`);
 function column(table, name, definition) {
   if (
     !db
@@ -48,6 +49,30 @@ column("history", "data", "TEXT NOT NULL DEFAULT '{}'");
 column("history", "internal", "INTEGER NOT NULL DEFAULT 0");
 column("history", "actor_name", "TEXT");
 column("requests", "chatwoot_conversation_id", "TEXT");
+column("whatsapp_rh", "data", "TEXT NOT NULL DEFAULT '{}'");
+// Auditoria: quem recebeu qual documento da Senior pelo WhatsApp.
+db.exec(
+  "CREATE TABLE IF NOT EXISTS whatsapp_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, phone TEXT, kind TEXT NOT NULL, month TEXT NOT NULL, numemp TEXT, numcad TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)",
+);
+column("whatsapp_documents", "name", "TEXT");
+column("requests", "rating", "INTEGER");
+column("requests", "rated_at", "TEXT");
+column("attachments", "message_id", "TEXT");
+// Respostas prontas do RH. {nome} e {protocolo} são trocados na hora de usar.
+db.exec(
+  "CREATE TABLE IF NOT EXISTS reply_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, body TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL)",
+);
+if (!db.prepare("SELECT 1 FROM reply_templates LIMIT 1").get()) {
+  const seed = db.prepare("INSERT INTO reply_templates (title,body,created_at) VALUES (?,?,?)");
+  for (const [title, body] of [
+    ["Atestado recebido", "Olá, {nome}! Recebemos o seu atestado e ele já foi lançado no sistema. Qualquer dúvida, é só chamar por aqui."],
+    ["Ajuste de ponto feito", "Olá, {nome}! O ajuste no seu ponto foi feito e aparece no espelho do mês na próxima atualização."],
+    ["Preciso de mais informações", "Olá, {nome}! Para seguir com o chamado {protocolo}, preciso que você me envie: "],
+    ["Encaminhado ao DP", "Olá, {nome}! Encaminhamos a sua solicitação ao Departamento Pessoal. Assim que tivermos o retorno, avisamos por aqui."],
+    ["Documento em anexo", "Olá, {nome}! Segue em anexo o documento solicitado."],
+  ])
+    seed.run(title, body, new Date().toISOString());
+}
 db.exec(
   `UPDATE requests SET closed_at=(SELECT MAX(created_at) FROM history WHERE request_id=requests.id AND event='Status alterado para Concluída') WHERE status='Concluída' AND closed_at IS NULL;`,
 );

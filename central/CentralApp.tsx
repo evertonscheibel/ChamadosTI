@@ -33,9 +33,8 @@ import SeniorDocuments from "./SeniorDocuments";
 import SeniorExport from "./SeniorExport";
 import SeniorSync from "./SeniorSync";
 import Management from "./Management";
-import IntegrationLinks from "./IntegrationLinks";
-import PortalVacancies from "./PortalVacancies";
-import Conversations from "./Conversations";
+import { useTicketAlerts, AlertToasts, AlertSettings, WhatsappBanner, type WhatsappHealth } from "./TicketAlerts";
+import RhQueue, { Channel, Deadline, displayName, type QueueTab } from "./RhQueue";
 
 type User = {
   id: string;
@@ -64,6 +63,7 @@ type Request = {
   priority: string;
   due_at?: string;
   closed_at?: string;
+  sla?: { percent: number; level: "verde" | "amarelo" | "laranja" | "vermelho" } | null;
 };
 type Detail = {
   request: Request;
@@ -104,8 +104,6 @@ const formatDate = (date: string) =>
     timeStyle: "short",
   });
 const serviceFor = (id: string) => services.find((s) => s.id === id);
-const overdue = (r: Request) =>
-  r.status !== "Concluída" && !!r.due_at && Date.parse(r.due_at) < Date.now();
 const maskCpf = (value: string) =>
   value
     .replace(/\D/g, "")
@@ -401,85 +399,6 @@ function NewRequest({
   );
 }
 
-function Triage({
-  request,
-  busy,
-  update,
-}: {
-  request: Request;
-  busy: boolean;
-  update: (input: unknown) => Promise<void>;
-}) {
-  const [team, setTeam] = useState<{ id: string; name: string }[]>([]);
-  const [due, setDue] = useState("");
-  const [error, setError] = useState("");
-  useEffect(() => {
-    api<{ team: typeof team }>("/team")
-      .then((r) => setTeam(r.team))
-      .catch((e) => setError(e.message));
-  }, []);
-  useEffect(() => {
-    if (request.due_at) {
-      const d = new Date(request.due_at);
-      setDue(
-        new Date(d.getTime() - d.getTimezoneOffset() * 60000)
-          .toISOString()
-          .slice(0, 16),
-      );
-    } else setDue("");
-  }, [request.due_at]);
-  return (
-    <div className="rh-triage">
-      <h3>Triagem e prazo</h3>
-      {error && <Notice>{error}</Notice>}
-      <label htmlFor="assigned-to">Responsável</label>
-      <select
-        id="assigned-to"
-        disabled={busy}
-        value={request.assigned_to || ""}
-        onChange={(e) => void update({ assigned_to: e.target.value || null })}
-      >
-        <option value="">Não atribuído</option>
-        {team.map((member) => (
-          <option value={member.id} key={member.id}>
-            {member.name}
-          </option>
-        ))}
-      </select>
-      <label htmlFor="priority">Prioridade</label>
-      <select
-        id="priority"
-        disabled={busy}
-        value={request.priority}
-        onChange={(e) => void update({ priority: e.target.value })}
-      >
-        {["Baixa", "Normal", "Alta"].map((p) => (
-          <option key={p}>{p}</option>
-        ))}
-      </select>
-      <label htmlFor="due-at">Prazo de atendimento</label>
-      <input
-        id="due-at"
-        type="datetime-local"
-        value={due}
-        onChange={(e) => setDue(e.target.value)}
-      />
-      <button
-        className="button secondary"
-        disabled={busy}
-        onClick={() =>
-          void update({ due_at: due ? new Date(due).toISOString() : null })
-        }
-      >
-        Salvar prazo
-        <Check size={16} />
-      </button>
-      <small>
-        Defina o prazo conforme o serviço e o acordo de atendimento do RH.
-      </small>
-    </div>
-  );
-}
 function RequestDetail({
   id,
   user,
@@ -491,12 +410,16 @@ function RequestDetail({
   onBack: () => void;
   onUpdated: () => void;
 }) {
+  const rh = user.role === "rh";
   const [internal, setInternal] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
+  const [team, setTeam] = useState<{ id: string; name: string }[]>([]);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
+  const thread = useRef<HTMLDivElement>(null);
   async function load() {
     try {
       setDetail(await api<Detail>(`/requests/${id}`));
@@ -506,8 +429,22 @@ function RequestDetail({
   }
   useEffect(() => {
     void load();
+    // Mensagens novas do WhatsApp aparecem sem recarregar a página.
+    const timer = window.setInterval(() => void load(), 20000);
+    if (rh)
+      api<{ team: typeof team }>("/team")
+        .then((r) => setTeam(r.team))
+        .catch(() => {});
+    return () => window.clearInterval(timer);
   }, [id]);
-  async function update(input: unknown) {
+  const messageCount = detail?.messages.length || 0;
+  useEffect(() => {
+    // Rola só a caixa da conversa (não a página) até a mensagem mais recente.
+    requestAnimationFrame(() => {
+      if (thread.current) thread.current.scrollTop = thread.current.scrollHeight;
+    });
+  }, [messageCount]);
+  async function update(input: Record<string, unknown>) {
     setBusy(true);
     setError("");
     try {
@@ -520,18 +457,28 @@ function RequestDetail({
       setBusy(false);
     }
   }
-  async function send(e: React.FormEvent) {
-    e.preventDefault();
+  async function send(e?: React.FormEvent) {
+    e?.preventDefault();
+    if (!message.trim() || busy || !detail) return;
     setBusy(true);
     setError("");
+    setWarning("");
     try {
-      await api(`/requests/${id}/messages`, "POST", {
+      const result = await api<{ warning?: string }>(`/requests/${id}/messages`, "POST", {
         body: message,
         attachments: files,
-        internal,
+        internal: rh && internal,
       });
+      if (result?.warning) setWarning(result.warning);
       setMessage("");
       setFiles([]);
+      // Responder ao colaborador já assume o chamado: um clique a menos para o RH.
+      const r = detail.request;
+      if (rh && !internal && (!r.assigned_to || r.status === "Recebida"))
+        await api(`/requests/${id}`, "PATCH", {
+          ...(r.assigned_to ? {} : { assign: true }),
+          ...(r.status === "Recebida" ? { status: "Em atendimento" } : {}),
+        });
       await load();
       onUpdated();
     } catch (e) {
@@ -542,267 +489,257 @@ function RequestDetail({
   }
   if (!detail)
     return (
-      <>
-        <button className="text-button" onClick={onBack}>
-          <ArrowLeft size={18} />
-          Voltar
+      <div className="ticket">
+        <button className="back-link" onClick={onBack}>
+          <ArrowLeft size={16} />
+          Chamados
         </button>
-        {error ? <Notice>{error}</Notice> : <p>Carregando solicitação…</p>}
-      </>
+        {error ? <Notice>{error}</Notice> : <p className="muted">Carregando chamado…</p>}
+      </div>
     );
   const request = detail.request;
+  const closed = request.status === "Concluída";
+  const whatsapp = request.fields?.Origem === "WhatsApp";
+  const answered = detail.messages.some((m) => m.role === "rh" && !m.internal);
+  const fields = Object.entries(request.fields).filter(([key]) => key !== "Origem");
+  // No WhatsApp a primeira mensagem já é a descrição: não repetir o texto.
+  const repeated = detail.messages[0]?.body.trim() === request.description.trim();
+  const conclude = () => {
+    if (
+      window.confirm(
+        whatsapp
+          ? "Concluir o chamado? O colaborador recebe pelo WhatsApp o aviso de que foi atendido."
+          : "Concluir o chamado?",
+      )
+    )
+      void update({ status: "Concluída" });
+  };
   return (
-    <div className="detail-page">
-      <button className="text-button" onClick={onBack}>
-        <ArrowLeft size={18} />
-        Voltar às solicitações
+    <div className="ticket">
+      <button className="back-link" onClick={onBack}>
+        <ArrowLeft size={16} />
+        {rh ? "Chamados" : "Minhas solicitações"}
       </button>
-      <div className="detail-heading">
-        <div>
-          <span className="eyebrow">{request.protocol}</span>
+      <header className="ticket-head">
+        <div className="ticket-title">
+          <span className="ticket-protocol">
+            {request.protocol}
+            <Channel request={request} />
+          </span>
           <h1>{request.subject}</h1>
           <p>
-            {serviceFor(request.service_id)?.title} · Aberta em{" "}
-            {formatDate(request.created_at)}
+            {serviceFor(request.service_id)?.title} · aberto em {formatDate(request.created_at)}
           </p>
         </div>
-        <Badge status={request.status} />
-      </div>
-      {error && <Notice>{error}</Notice>}
-      <div className="detail-grid">
-        <div>
-          <section className="panel">
-            <h2>Informações da solicitação</h2>
-            <p className="preserve-lines">{request.description}</p>
-            <div className="field-summary">
-              {Object.entries(request.fields).map(([key, value]) => (
-                <div key={key}>
-                  <small>{key}</small>
-                  <strong>{value}</strong>
-                </div>
-              ))}
-            </div>
-            {detail.attachments.length > 0 && (
-              <div className="attachments">
-                <h3>Documentos anexados</h3>
-                {detail.attachments.map((f) => (
-                  <a
-                    key={f.id}
-                    href={`/api/attachments/${f.id}`}
-                    className="attachment"
-                  >
-                    <Paperclip size={17} />
-                    {f.name}
-                    {f.internal ? " · Interno RH" : ""}
-                    <small>{Math.ceil(f.size / 1024)} KB</small>
-                  </a>
-                ))}
-              </div>
-            )}
-          </section>
-          <section className="panel conversation">
-            <h2>
-              Conversa com {user.role === "rh" ? "o colaborador" : "o RH"}
-            </h2>
-            {detail.messages.length === 0 ? (
-              <div className="empty-small">
-                <MessagesSquare size={24} />
-                <p>Ainda não há mensagens. As respostas aparecerão aqui.</p>
-              </div>
-            ) : (
-              detail.messages.map((m) => (
-                <article
-                  key={m.id}
-                  className={`message ${m.role === "rh" ? "message-rh" : ""} ${m.internal ? "message-internal" : ""}`}
-                >
-                  <div>
-                    <strong>
-                      {m.author}
-                      {m.role === "rh" ? " · RH" : ""}
-                      {m.internal ? " · Nota interna" : ""}
-                    </strong>
-                    <small>{formatDate(m.created_at)}</small>
-                  </div>
-                  <p className="preserve-lines">{m.body}</p>
-                </article>
-              ))
-            )}
-            {request.status === "Concluída" ? (
-              <div className="completion">
-                <CheckCircle2 size={20} />
-                <p>
-                  Atendimento concluído. Se precisar de outra ajuda, abra uma
-                  nova solicitação.
-                </p>
-              </div>
-            ) : (
-              <form onSubmit={send} className="reply-form">
-                <>
-                  {user.role === "rh" && (
-                    <div className="reply-tabs">
-                      <button
-                        type="button"
-                        className={!internal ? "selected" : ""}
-                        onClick={() => setInternal(false)}
-                      >
-                        Resposta ao colaborador
-                      </button>
-                      <button
-                        type="button"
-                        className={internal ? "selected internal" : ""}
-                        onClick={() => setInternal(true)}
-                      >
-                        Nota interna do RH
-                      </button>
-                    </div>
-                  )}
-                  {internal && (
-                    <div className="internal-notice">
-                      <ShieldCheck size={15} />
-                      Esta nota e seus anexos ficam visíveis apenas ao RH.
-                    </div>
-                  )}
-                </>
-                <label htmlFor="reply">
-                  {user.role === "rh"
-                    ? internal
-                      ? "Nota interna"
-                      : "Resposta ao colaborador"
-                    : "Enviar mensagem ao RH"}
-                </label>
-                <textarea
-                  id="reply"
-                  required
-                  rows={3}
-                  maxLength={10000}
-                  placeholder="Escreva sua mensagem…"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                />
-                <Upload files={files} setFiles={setFiles} />
-                <button
-                  className="button primary"
-                  disabled={busy || !message.trim()}
-                >
-                  {busy
-                    ? "Enviando…"
-                    : internal
-                      ? "Salvar nota interna"
-                      : "Enviar mensagem"}
-                  <Send size={16} />
+        <div className="ticket-actions">
+          {rh && !closed ? (
+            <>
+              {request.assigned_to !== user.id && (
+                <button className="button secondary" disabled={busy} onClick={() => void update({ assign: true, ...(request.status === "Recebida" ? { status: "Em atendimento" } : {}) })}>
+                  <Headphones size={16} />
+                  Assumir
                 </button>
-              </form>
-            )}
-          </section>
-        </div>
-        <aside>
-          <section className="panel">
-            <h2>{user.role === "rh" ? "Atendimento" : "Seu atendimento"}</h2>
-            <div className="person">
-              <span className="avatar">
-                {request.requester_name.slice(0, 1)}
-              </span>
-              <div>
-                <strong>{request.requester_name}</strong>
-                <small>{request.department}</small>
-              </div>
-            </div>
-            <dl className="metadata">
-              <dt>Unidade</dt>
-              <dd>{request.unit}</dd>
-              <dt>Responsável</dt>
-              <dd>{request.assigned_name || "Aguardando distribuição"}</dd>
-              <dt>Prazo de atendimento</dt>
-              <dd className={overdue(request) ? "deadline-overdue" : ""}>
-                {request.due_at
-                  ? formatDate(request.due_at)
-                  : "A definir pelo RH"}
-                {overdue(request) ? " · Prazo ultrapassado" : ""}
-              </dd>
-              <dt>Abertura</dt>
-              <dd>{formatDate(request.created_at)}</dd>
-              {request.closed_at && (
-                <>
-                  <dt>Conclusão</dt>
-                  <dd>{formatDate(request.closed_at)}</dd>
-                </>
               )}
-              <dt>Última atualização</dt>
-              <dd>{formatDate(request.updated_at)}</dd>
-            </dl>
-            {user.role === "rh" && (
-              <div className="rh-actions">
-                <button
-                  className="button secondary"
-                  disabled={busy}
-                  onClick={() =>
-                    void update({
-                      assign: true,
-                      status:
-                        request.status === "Recebida"
-                          ? "Em atendimento"
-                          : request.status,
-                    })
-                  }
-                >
-                  <Headphones size={17} />
-                  Assumir atendimento
-                </button>
-                <label htmlFor="request-status">Status do atendimento</label>
-                <select
-                  id="request-status"
-                  disabled={busy}
-                  value={request.status}
-                  onChange={(e) => void update({ status: e.target.value })}
-                >
-                  {statuses.map((s) => (
+              <select
+                aria-label="Status do chamado"
+                disabled={busy}
+                value={request.status}
+                onChange={(e) => void update({ status: e.target.value })}
+              >
+                {statuses
+                  .filter((s) => s !== "Concluída")
+                  .map((s) => (
                     <option key={s}>{s}</option>
                   ))}
-                </select>
-                <small>
-                  Envie uma resposta antes de concluir o atendimento.
-                </small>
-                <Triage request={request} busy={busy} update={update} />
+              </select>
+              <button
+                className="button primary"
+                disabled={busy || !answered}
+                title={answered ? "" : "Responda ao colaborador antes de concluir."}
+                onClick={conclude}
+              >
+                <CheckCircle2 size={16} />
+                Concluir
+              </button>
+            </>
+          ) : rh ? (
+            <>
+              <Badge status={request.status} />
+              <button className="button secondary" disabled={busy} onClick={() => void update({ status: "Em atendimento" })}>
+                Reabrir
+              </button>
+            </>
+          ) : (
+            <Badge status={request.status} />
+          )}
+        </div>
+      </header>
+      {error && <Notice>{error}</Notice>}
+      {warning && <Notice>{warning}</Notice>}
+      <div className="ticket-grid">
+        <section className="ticket-thread" aria-label="Conversa">
+          <div className="thread-messages" ref={thread}>
+          {(!repeated || fields.length > 0) && (
+          <article className="bubble bubble-them bubble-opening">
+            <header>
+              <strong>{repeated ? "Dados do chamado" : displayName(request)}</strong>
+              <small>Abertura · {formatDate(request.created_at)}</small>
+            </header>
+            {!repeated && <p className="preserve-lines">{request.description}</p>}
+            {fields.length > 0 && (
+              <dl className="bubble-fields">
+                {fields.map(([key, value]) => (
+                  <div key={key}>
+                    <dt>{key}</dt>
+                    <dd>{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </article>
+          )}
+          {detail.messages.map((m) => (
+            <article
+              key={m.id}
+              className={`bubble ${m.internal ? "bubble-note" : m.role === "rh" ? "bubble-us" : "bubble-them"}`}
+            >
+              <header>
+                <strong>
+                  {m.internal ? <ShieldCheck size={13} /> : null}
+                  {m.role === "rh" ? m.author : displayName(request)}
+                  {m.internal ? " · nota interna" : ""}
+                </strong>
+                <small>{formatDate(m.created_at)}</small>
+              </header>
+              <p className="preserve-lines">{m.body}</p>
+            </article>
+          ))}
+          </div>
+          {closed ? (
+            <div className="thread-closed">
+              <CheckCircle2 size={18} />
+              {rh
+                ? `Chamado concluído em ${request.closed_at ? formatDate(request.closed_at) : "—"}.`
+                : "Atendimento concluído. Se precisar de outra ajuda, abra uma nova solicitação."}
+            </div>
+          ) : (
+            <form onSubmit={send} className={`composer ${internal ? "composer-note" : ""}`}>
+              {rh && (
+                <div className="composer-mode" role="tablist">
+                  <button type="button" role="tab" aria-selected={!internal} className={!internal ? "selected" : ""} onClick={() => setInternal(false)}>
+                    Responder
+                  </button>
+                  <button type="button" role="tab" aria-selected={internal} className={internal ? "selected" : ""} onClick={() => setInternal(true)}>
+                    Nota interna
+                  </button>
+                  <span>
+                    {internal
+                      ? "Só o RH vê esta nota."
+                      : whatsapp
+                        ? "Vai para o WhatsApp do colaborador."
+                        : "O colaborador vê no portal."}
+                  </span>
+                </div>
+              )}
+              <textarea
+                aria-label={rh ? (internal ? "Nota interna" : "Resposta ao colaborador") : "Mensagem ao RH"}
+                required
+                rows={3}
+                maxLength={10000}
+                placeholder={internal ? "Anotação para a equipe…" : "Escreva a resposta…  (Ctrl+Enter envia)"}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void send();
+                }}
+              />
+              <div className="composer-foot">
+                <Upload files={files} setFiles={setFiles} />
+                <button className="button primary" disabled={busy || !message.trim()}>
+                  {busy ? "Enviando…" : internal ? "Salvar nota" : "Enviar"}
+                  <Send size={15} />
+                </button>
               </div>
+            </form>
+          )}
+        </section>
+        <aside className="ticket-side">
+          <section className="side-card">
+            <div className="person">
+              <span className="avatar">{/^\p{L}/u.test(displayName(request)) ? displayName(request)[0] : <UserRound size={18} />}</span>
+              <div>
+                <strong>{displayName(request)}</strong>
+                <small>
+                  {[request.department, request.unit].filter((v) => v && v !== "Não informado").join(" · ") || "Setor não informado"}
+                </small>
+              </div>
+            </div>
+          </section>
+          <section className="side-card">
+            <h2>Prazo</h2>
+            {closed ? (
+              <p className="side-value">Concluído em {request.closed_at ? formatDate(request.closed_at) : "—"}</p>
+            ) : (
+              <>
+                <Deadline request={request} />
+                <p className="side-sub">{request.due_at ? `Vence ${formatDate(request.due_at)} · 48h úteis` : "Sem prazo definido"}</p>
+              </>
             )}
           </section>
-          <section className="panel">
-            <h2>Histórico</h2>
-            <ol className="timeline">
+          <section className="side-card">
+            <h2>Responsável</h2>
+            {rh ? (
+              <select
+                aria-label="Responsável"
+                disabled={busy || closed}
+                value={request.assigned_to || ""}
+                onChange={(e) => void update({ assigned_to: e.target.value || null })}
+              >
+                <option value="">Ninguém</option>
+                {team.map((member) => (
+                  <option value={member.id} key={member.id}>
+                    {member.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="side-value">{request.assigned_name || "Aguardando o RH"}</p>
+            )}
+          </section>
+          {detail.attachments.length > 0 && (
+            <section className="side-card">
+              <h2>Anexos</h2>
+              {detail.attachments.map((f) => (
+                <a key={f.id} href={`/api/attachments/${f.id}`} className="side-file">
+                  <Paperclip size={14} />
+                  <span>{f.name}</span>
+                  <small>
+                    {f.internal ? "interno · " : ""}
+                    {Math.ceil(f.size / 1024)} KB
+                  </small>
+                </a>
+              ))}
+            </section>
+          )}
+          <details className="side-card side-history">
+            <summary>
+              <h2>Histórico</h2>
+              <small>{detail.history.length} eventos</small>
+            </summary>
+            <ol>
               {detail.history.map((item) => (
                 <li key={item.id}>
-                  <i />
                   <strong>
                     {item.event}
-                    {item.internal === 1 ? " · Interno" : ""}
+                    {item.internal === 1 ? " · interno" : ""}
                   </strong>
-                  {item.data && "from" in item.data && (
-                    <small>
-                      {item.kind === "deadline"
-                        ? item.data.from
-                          ? formatDate(item.data.from)
-                          : "Sem prazo"
-                        : item.data.from || "Não definido"}{" "}
-                      →{" "}
-                      {item.kind === "deadline"
-                        ? item.data.to
-                          ? formatDate(item.data.to)
-                          : "Sem prazo"
-                        : item.data.to || "Não definido"}
-                    </small>
-                  )}
-                  {!!item.data?.attachments && (
-                    <small>
-                      {item.data.attachments} documento(s) anexado(s)
-                    </small>
-                  )}
                   <small>
                     {item.author} · {formatDate(item.created_at)}
                   </small>
                 </li>
               ))}
             </ol>
-          </section>
+          </details>
         </aside>
       </div>
     </div>
@@ -1116,7 +1053,7 @@ export default function CentralApp() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<
-    "home" | "requests" | "help" | "users" | "documents" | "conversations"
+    "home" | "requests" | "help" | "users" | "documents"
   >("home");
   const [requests, setRequests] = useState<Request[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -1127,32 +1064,44 @@ export default function CentralApp() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("Todas");
   const [category, setCategory] = useState("Todos os serviços");
-  const [queue, setQueue] = useState("Todas");
-  const [employeeFilter, setEmployeeFilter] = useState("");
-  const [order, setOrder] = useState("recentes");
+  const [queue, setQueue] = useState<QueueTab>("abertos");
   const [cpf, setCpf] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<Request | null>(null);
+  const [syncedAt, setSyncedAt] = useState<Date | null>(null);
+  // Só compara depois da primeira carga real da fila (antes dela a lista está vazia).
+  const ticketAlerts = useTicketAlerts(requests, user?.role === "rh" && syncedAt !== null);
+  const [whatsappHealth, setWhatsappHealth] = useState<WhatsappHealth | null>(null);
   async function refresh() {
     try {
       const result = await api<{ requests: Request[] }>("/requests");
       setRequests(result.requests);
+      setSyncedAt(new Date());
+      if (user?.role === "rh")
+        api<WhatsappHealth>("/whatsapp/status")
+          .then(setWhatsappHealth)
+          .catch(() => setWhatsappHealth(null));
+      setError("");
     } catch (e) {
       setError((e as Error).message);
     }
   }
   useEffect(() => {
     api<{ user: User }>("/me")
-      .then((r) => setUser(r.user))
+      .then((r) => {
+        setUser(r.user);
+        if (r.user.role === "rh") setView("requests");
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
     const expire = () => {
       setUser(null);
       setRequests([]);
       setActive(null);
+      setSyncedAt(null);
       setError("Sua sessão terminou. Entre novamente.");
     };
     window.addEventListener("frizelo-session-expired", expire);
@@ -1161,7 +1110,8 @@ export default function CentralApp() {
   useEffect(() => {
     if (user) {
       void refresh();
-      const timer = window.setInterval(() => void refresh(), 30000);
+      // RH: fila a cada 20s para os avisos de chamado novo/crítico saírem rápido.
+      const timer = window.setInterval(() => void refresh(), user.role === "rh" ? 20000 : 30000);
       return () => window.clearInterval(timer);
     }
   }, [user?.id]);
@@ -1176,13 +1126,12 @@ export default function CentralApp() {
       });
       setUser(result.user);
       setPassword("");
-      setView("home");
+      setView(result.user.role === "rh" ? "requests" : "home");
       setActive(null);
-      setQueue("Todas");
+      setQueue("abertos");
       setFilter("Todas");
       setCategory("Todos os serviços");
       setSearch("");
-      setEmployeeFilter("");
       if (pending && result.user.role === "colaborador") {
         setSelected(pending);
         setPending(null);
@@ -1200,6 +1149,7 @@ export default function CentralApp() {
       await api("/logout", "POST", {});
       setUser(null);
       setRequests([]);
+      setSyncedAt(null);
       setActive(null);
       setView("home");
     } catch (e) {
@@ -1210,9 +1160,8 @@ export default function CentralApp() {
   }
   function navigate(
     next:
-      "home" | "requests" | "help" | "users" | "documents" | "conversations",
+      "home" | "requests" | "help" | "users" | "documents",
   ) {
-    setEmployeeFilter("");
     setView(next);
     setActive(null);
     setSearch("");
@@ -1233,44 +1182,16 @@ export default function CentralApp() {
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
-  const requesters = [
-    ...new Map(
-      requests.map((r) => [
-        r.user_id,
-        { id: r.user_id, name: r.requester_name, unit: r.unit },
-      ]),
-    ).values(),
-  ].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
   const visibleRequests = requests
     .filter(
       (r) =>
-        (user?.role !== "rh" ||
-          queue === "Todas" ||
-          (queue === "Minha fila" && r.assigned_to === user?.id) ||
-          (queue === "Não atribuídas" &&
-            !r.assigned_to &&
-            r.status !== "Concluída") ||
-          (queue === "Prazo ultrapassado" && overdue(r))) &&
-        (user?.role !== "rh" ||
-          !employeeFilter ||
-          r.user_id === employeeFilter) &&
         (filter === "Todas" || r.status === filter) &&
         (category === "Todos os serviços" || r.service_id === category) &&
-        `${r.protocol} ${r.subject} ${r.requester_name}`
+        `${r.protocol} ${r.subject}`
           .toLowerCase()
           .includes(search.toLowerCase()),
     )
-    .sort((a, b) =>
-      order === "antigas"
-        ? Date.parse(a.created_at) - Date.parse(b.created_at)
-        : order === "prioridade"
-          ? ["Alta", "Normal", "Baixa"].indexOf(a.priority) -
-            ["Alta", "Normal", "Baixa"].indexOf(b.priority)
-          : order === "prazo"
-            ? (a.due_at ? Date.parse(a.due_at) : Infinity) -
-              (b.due_at ? Date.parse(b.due_at) : Infinity)
-            : Date.parse(b.created_at) - Date.parse(a.created_at),
-    );
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   const openCount = requests.filter((r) => r.status !== "Concluída").length;
   if (loading)
     return (
@@ -1281,6 +1202,14 @@ export default function CentralApp() {
     );
   return (
     <div className="central">
+      <AlertToasts
+        alerts={ticketAlerts.alerts}
+        dismiss={ticketAlerts.dismiss}
+        onOpen={(id) => {
+          setView("requests");
+          setActive(id);
+        }}
+      />
       <div className="topline">
         <span>Um canal para cuidar de quem faz a Frizelo.</span>
         <span>
@@ -1303,65 +1232,61 @@ export default function CentralApp() {
             <strong>Relacionamentos</strong>
           </div>
           <nav aria-label="Navegação principal">
-            <button
-              onClick={() => {
-                window.location.href = "/?chatbot=1";
-              }}
-            >
-              Simulador do chatbot
-            </button>
-            <button
-              onClick={() => {
-                window.location.href = "/?atendimento=1";
-              }}
-            >
-              Atendimento (dados reais)
-            </button>
-            <button
-              className={view === "home" && !active ? "nav-active" : ""}
-              onClick={() => navigate("home")}
-            >
-              {user?.role === "rh" ? "Visão geral" : "Início"}
-            </button>
-            {user && (
-              <button
-                className={view === "requests" || active ? "nav-active" : ""}
-                onClick={() => navigate("requests")}
-              >
-                {user.role === "rh" ? "Atendimentos" : "Minhas solicitações"}
-              </button>
-            )}
-            {user?.role === "colaborador" && (
-              <button
-                className={view === "documents" ? "nav-active" : ""}
-                onClick={() => navigate("documents")}
-              >
-                Consultas
-              </button>
-            )}
-            {!user && (
-              <button
-                className={view === "help" ? "nav-active" : ""}
-                onClick={() => navigate("help")}
-              >
-                Ajuda
-              </button>
-            )}
-            {user?.role === "rh" && (
-              <button
-                className={view === "users" ? "nav-active" : ""}
-                onClick={() => navigate("users")}
-              >
-                Colaboradores
-              </button>
-            )}
-            {user?.role === "rh" && (
-              <button
-                className={view === "conversations" ? "nav-active" : ""}
-                onClick={() => navigate("conversations")}
-              >
-                Histórico de conversas
-              </button>
+            {user?.role === "rh" ? (
+              <>
+                <button
+                  className={view === "requests" || active ? "nav-active" : ""}
+                  onClick={() => navigate("requests")}
+                >
+                  Chamados
+                  {openCount > 0 && <span className="nav-count">{openCount}</span>}
+                </button>
+                <button
+                  className={view === "home" && !active ? "nav-active" : ""}
+                  onClick={() => navigate("home")}
+                >
+                  Indicadores
+                </button>
+                <button
+                  className={view === "users" ? "nav-active" : ""}
+                  onClick={() => navigate("users")}
+                >
+                  Colaboradores
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className={view === "home" && !active ? "nav-active" : ""}
+                  onClick={() => navigate("home")}
+                >
+                  Início
+                </button>
+                {user && (
+                  <button
+                    className={view === "requests" || active ? "nav-active" : ""}
+                    onClick={() => navigate("requests")}
+                  >
+                    Minhas solicitações
+                  </button>
+                )}
+                {user && (
+                  <button
+                    className={view === "documents" ? "nav-active" : ""}
+                    onClick={() => navigate("documents")}
+                  >
+                    Consultas
+                  </button>
+                )}
+                {!user && (
+                  <button
+                    className={view === "help" ? "nav-active" : ""}
+                    onClick={() => navigate("help")}
+                  >
+                    Ajuda
+                  </button>
+                )}
+              </>
             )}
           </nav>
           {user ? (
@@ -1417,29 +1342,28 @@ export default function CentralApp() {
           <SeniorDocuments />
         ) : view === "users" && user?.role === "rh" ? (
           <Employees />
-        ) : view === "conversations" && user?.role === "rh" ? (
-          <Conversations />
         ) : view === "help" ? (
           <Help />
+        ) : view === "requests" && user?.role === "rh" ? (
+          <RhQueue
+            requests={requests}
+            userId={user.id}
+            tab={queue}
+            setTab={setQueue}
+            onOpen={setActive}
+            onRefresh={() => void refresh()}
+            syncedAt={syncedAt}
+            error={error}
+            tools={<AlertSettings sound={ticketAlerts.sound} toggleSound={ticketAlerts.toggleSound} />}
+            banner={<WhatsappBanner health={whatsappHealth} />}
+          />
         ) : view === "requests" && user ? (
           <section className="requests-page">
             <div className="page-heading">
               <div>
-                <span className="eyebrow">
-                  {user.role === "rh"
-                    ? "Central de atendimento · RH"
-                    : "Seu atendimento, do início ao fim"}
-                </span>
-                <h1>
-                  {user.role === "rh"
-                    ? "Solicitações dos colaboradores"
-                    : "Minhas solicitações"}
-                </h1>
-                <p>
-                  {user.role === "rh"
-                    ? "Organize a fila e acompanhe cada atendimento."
-                    : "Acompanhe os protocolos e converse com o RH."}
-                </p>
+                <span className="eyebrow">Seu atendimento, do início ao fim</span>
+                <h1>Minhas solicitações</h1>
+                <p>Acompanhe os protocolos e converse com o RH.</p>
               </div>
               <button
                 className="button secondary"
@@ -1450,48 +1374,16 @@ export default function CentralApp() {
               </button>
             </div>
             {error && <Notice>{error}</Notice>}
-            {user.role === "rh" && (
-              <div className="queue-tabs">
-                {[
-                  "Todas",
-                  "Minha fila",
-                  "Não atribuídas",
-                  "Prazo ultrapassado",
-                ].map((q) => (
-                  <button
-                    key={q}
-                    className={queue === q ? "selected" : ""}
-                    onClick={() => setQueue(q)}
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            )}
             <div className="request-filters">
               <div className="search-box">
                 <Search size={18} />
                 <input
                   aria-label="Buscar solicitação"
-                  placeholder="Buscar por protocolo, assunto ou nome…"
+                  placeholder="Buscar por protocolo ou assunto…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              {user.role === "rh" && (
-                <select
-                  aria-label="Filtrar por colaborador"
-                  value={employeeFilter}
-                  onChange={(e) => setEmployeeFilter(e.target.value)}
-                >
-                  <option value="">Todos os colaboradores</option>
-                  {requesters.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name} · {r.unit}
-                    </option>
-                  ))}
-                </select>
-              )}
               <select
                 aria-label="Filtrar por status"
                 value={filter}
@@ -1514,18 +1406,6 @@ export default function CentralApp() {
                   </option>
                 ))}
               </select>
-              {user.role === "rh" && (
-                <select
-                  aria-label="Ordenar solicitações"
-                  value={order}
-                  onChange={(e) => setOrder(e.target.value)}
-                >
-                  <option value="recentes">Mais recentes</option>
-                  <option value="antigas">Mais antigas</option>
-                  <option value="prioridade">Maior prioridade</option>
-                  <option value="prazo">Prazo mais próximo</option>
-                </select>
-              )}
             </div>
             <div className="requests-list">
               {visibleRequests.length === 0 ? (
@@ -1536,20 +1416,14 @@ export default function CentralApp() {
                       ? "Nenhuma solicitação com esses filtros"
                       : "Tudo pronto para começar"}
                   </h3>
-                  <p>
-                    {user.role === "rh"
-                      ? "As solicitações recebidas aparecerão aqui."
-                      : "Escolha um serviço para abrir sua primeira solicitação."}
-                  </p>
-                  {user.role === "colaborador" && (
-                    <button
-                      className="button primary"
-                      onClick={() => navigate("home")}
-                    >
-                      Ver serviços
-                      <ArrowRight size={16} />
-                    </button>
-                  )}
+                  <p>Escolha um serviço para abrir sua primeira solicitação.</p>
+                  <button
+                    className="button primary"
+                    onClick={() => navigate("home")}
+                  >
+                    Ver serviços
+                    <ArrowRight size={16} />
+                  </button>
                 </div>
               ) : (
                 visibleRequests.map((r) => (
@@ -1566,26 +1440,10 @@ export default function CentralApp() {
                         {r.protocol} · {serviceFor(r.service_id)?.title}
                       </small>
                       <h3>{r.subject}</h3>
-                      <p>
-                        {user.role === "rh"
-                          ? `${r.requester_name} · ${r.department} · `
-                          : ""}
-                        {formatDate(r.created_at)}
-                      </p>
+                      <p>{formatDate(r.created_at)}</p>
                     </div>
                     <div className="row-status">
                       <Badge status={r.status} />
-                      {user.role === "rh" && (
-                        <small className={overdue(r) ? "deadline-overdue" : ""}>
-                          {r.priority}
-                          {r.due_at
-                            ? " · " +
-                              (overdue(r)
-                                ? "Prazo ultrapassado"
-                                : formatDate(r.due_at))
-                            : ""}
-                        </small>
-                      )}
                     </div>
                     <ChevronRight size={20} />
                   </button>
@@ -1594,105 +1452,14 @@ export default function CentralApp() {
             </div>
           </section>
         ) : user?.role === "rh" ? (
-          <section className="rh-home">
-            <div className="page-heading">
-              <div>
-                <span className="eyebrow">
-                  Central de Relacionamentos · Frizelo
-                </span>
-                <h1>Bom atendimento começa aqui.</h1>
-                <p>
-                  Um lugar para acolher, organizar e resolver as solicitações
-                  dos colaboradores.
-                </p>
-              </div>
-              <span className="team-tag">
-                <Headphones size={18} />
-                Equipe de RH
-              </span>
-            </div>
+          <section className="indicators-page">
             {error && <Notice>{error}</Notice>}
             <Management
-              onQueue={(queueName) => {
-                setQueue(queueName);
-                setFilter("Todas");
+              onQueue={(tab) => {
+                setQueue(tab as QueueTab);
                 navigate("requests");
               }}
             />
-            <PortalVacancies />
-            <IntegrationLinks />
-            <div className="section-heading">
-              <div>
-                <span className="eyebrow">Fila de atendimento</span>
-                <h2>Solicitações recentes</h2>
-              </div>
-              <button
-                className="text-button"
-                onClick={() => {
-                  setFilter("Todas");
-                  navigate("requests");
-                }}
-              >
-                Ver todas
-                <ArrowRight size={17} />
-              </button>
-            </div>
-            <div className="requests-list">
-              {requests.length ? (
-                requests.slice(0, 6).map((r) => (
-                  <button
-                    className="request-row"
-                    key={r.id}
-                    onClick={() => setActive(r.id)}
-                  >
-                    <span className="request-row-icon">
-                      <FileText size={22} />
-                    </span>
-                    <div className="request-row-main">
-                      <small>{r.protocol}</small>
-                      <h3>{r.subject}</h3>
-                      <p>
-                        {r.requester_name} · {r.department}
-                      </p>
-                    </div>
-                    <div className="row-status">
-                      <Badge status={r.status} />
-                      {user.role === "rh" && (
-                        <small className={overdue(r) ? "deadline-overdue" : ""}>
-                          {r.priority}
-                          {r.due_at
-                            ? " · " +
-                              (overdue(r)
-                                ? "Prazo ultrapassado"
-                                : formatDate(r.due_at))
-                            : ""}
-                        </small>
-                      )}
-                    </div>
-                    <ChevronRight size={20} />
-                  </button>
-                ))
-              ) : (
-                <div className="empty-state">
-                  <HeartHandshake size={38} />
-                  <h3>Prontos para acolher</h3>
-                  <p>
-                    Quando um colaborador enviar uma solicitação, ela aparecerá
-                    aqui.
-                  </p>
-                </div>
-              )}
-            </div>
-            <div className="help-banner">
-              <ShieldCheck size={28} />
-              <div>
-                <h3>Atendimento com cuidado e privacidade</h3>
-                <p>
-                  As solicitações são individuais. Responda ao colaborador pelo
-                  próprio protocolo e anexe apenas os documentos necessários.
-                </p>
-              </div>
-            </div>
           </section>
         ) : (
           <>

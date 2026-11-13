@@ -37,6 +37,11 @@ export function managementCsv(report, { days = 30, includeDemo = false } = {}) {
       report.resolutionSample,
     ],
     [
+      "Satisfação no WhatsApp (nota média de 1 a 5)",
+      report.ratingAverage ?? "Sem notas",
+      report.ratingSample ?? 0,
+    ],
+    [
       "Concluídas dentro do prazo",
       report.withinDeadline,
       report.deadlineSample,

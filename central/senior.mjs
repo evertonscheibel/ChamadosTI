@@ -215,6 +215,19 @@ async function eventCatalogEntry(code, { query, configuration }) {
   eventCatalogCache.set(cacheKey, catalog[0]);
   return catalog[0];
 }
+// Descrição das situações do ponto (R010SIT, módulo Ronda), em cache como o catálogo de eventos.
+const situationCache = new Map();
+export async function situationNames(codes, source = { query }) {
+  const names = {};
+  for (const code of [...new Set(codes.map(String))]) {
+    if (!situationCache.has(code)) {
+      const rows = await source.query("R010SIT", ["CODSIT", "DESSIT"], [["CODSIT", "=", code]], "ronda");
+      situationCache.set(code, rows.length === 1 && String(rows[0].CODSIT) === code ? rows[0].DESSIT : null);
+    }
+    if (situationCache.get(code)) names[code] = situationCache.get(code);
+  }
+  return names;
+}
 const keys = ["NUMEMP", "TIPCOL", "NUMCAD"];
 export function assertScope(rows, link) {
   if (

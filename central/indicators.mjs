@@ -96,6 +96,15 @@ export function indicators(
       (row) => time(row.closed_at) <= time(row.closed_due_at),
     ).length,
     deadlineSample: withDue.length,
+    // Pesquisa do WhatsApp: nota de 1 a 5 dos chamados concluídos no período.
+    ...(() => {
+      const rated = closed.filter((row) => row.rating >= 1 && row.rating <= 5);
+      return {
+        ratingAverage: rated.length ? Math.round((rated.reduce((a, row) => a + row.rating, 0) / rated.length) * 10) / 10 : null,
+        ratingSample: rated.length,
+        ratingSurveyed: closed.filter((row) => row.origin === "WhatsApp").length,
+      };
+    })(),
     missingClosedDate: selected.filter(
       (row) => row.status === "Concluída" && !row.closed_at,
     ).length,
@@ -123,7 +132,7 @@ export function indicators(
 export function managementReport(db, options) {
   const rows = db
     .prepare(
-      `WITH replies AS (SELECT m.request_id,MIN(m.created_at) first_response_at FROM messages m JOIN users u ON u.id=m.user_id WHERE u.role='rh' AND m.internal=0 GROUP BY m.request_id) SELECT r.id,r.user_id,r.service_id,r.status,r.assigned_to,r.created_at,r.closed_at,r.due_at,r.closed_due_at,u.name assigned_name,p.first_response_at FROM requests r LEFT JOIN users u ON u.id=r.assigned_to LEFT JOIN replies p ON p.request_id=r.id`,
+      `WITH replies AS (SELECT m.request_id,MIN(m.created_at) first_response_at FROM messages m JOIN users u ON u.id=m.user_id WHERE u.role='rh' AND m.internal=0 GROUP BY m.request_id) SELECT r.id,r.user_id,r.service_id,r.status,r.assigned_to,r.created_at,r.closed_at,r.due_at,r.closed_due_at,r.rating,json_extract(r.fields,'$.Origem') origin,u.name assigned_name,p.first_response_at FROM requests r LEFT JOIN users u ON u.id=r.assigned_to LEFT JOIN replies p ON p.request_id=r.id`,
     )
     .all();
   return indicators(rows, options);

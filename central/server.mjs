@@ -31,7 +31,7 @@ import {
   buildChallenge,
   looksUnknown,
 } from "./senior-identity.mjs";
-import { realReply, parseMonth } from "./senior-reply.mjs";
+import { realReply, parseMonth, candidateUser } from "./senior-reply.mjs";
 import { normalizedCpf } from "./identity.mjs";
 import {
   logConversationMessage,
@@ -54,7 +54,35 @@ import {
   sendMessage as sendChatwootMessage,
   handOffTicket,
   handToHuman,
+  resolveConversation,
+  sendMessageWithFiles,
+  downloadAttachment,
 } from "./chatwoot-client.mjs";
+import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
+import { startWahaWatchdog } from "./waha-watchdog.mjs";
+import {
+  whatsappConfig,
+  phoneAllowed,
+  nextStep,
+  businessDeadline,
+  slaStatus,
+  THEMES,
+  ticketOpenedText,
+  ticketClosedText,
+  ticketOpenReminderText,
+  sameName,
+  verifiedText,
+  retryIdentityText,
+  identityFailedText,
+  anotherMonthText,
+  statusText,
+  ratingThanksText,
+  rememberedText,
+  ticketTheme,
+  withinOfficeHours,
+} from "./whatsapp-rh.mjs";
+import { holeritePdf, espelhoPdf } from "./senior-documents.mjs";
+import { situationNames } from "./senior.mjs";
 import { recordAgentReply, closeFromChatwoot } from "./chatwoot-sync.mjs";
 
 initializeLinks(db);
@@ -469,8 +497,15 @@ function list(user) {
   const statement = db.prepare(
     `SELECT r.*, u.name requester_name, u.unit, u.department, a.name assigned_name FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN users a ON a.id=r.assigned_to ${clause} ORDER BY r.created_at DESC`,
   );
+  const { holidays } = whatsappConfig();
+  const now = Date.now();
   return (user.role === "rh" ? statement.all() : statement.all(user.id)).map(
-    (r) => ({ ...r, fields: JSON.parse(r.fields) }),
+    (r) => ({
+      ...r,
+      fields: JSON.parse(r.fields),
+      // Criticidade pelo prazo útil consumido (verde/amarelo/laranja/vermelho).
+      sla: r.status !== "Concluída" && r.due_at ? slaStatus(r.created_at, r.due_at, now, holidays) : null,
+    }),
   );
 }
 function files(input) {
@@ -501,10 +536,10 @@ function files(input) {
     return { name, type: f.type, content };
   });
 }
-function saveFiles(items, id, user, internal = 0) {
+function saveFiles(items, id, user, internal = 0, messageId = null) {
   for (const f of items)
     db.prepare(
-      "INSERT INTO attachments (id,request_id,user_id,name,type,content,created_at,internal) VALUES (?,?,?,?,?,?,?,?)",
+      "INSERT INTO attachments (id,request_id,user_id,name,type,content,created_at,internal,message_id) VALUES (?,?,?,?,?,?,?,?,?)",
     ).run(
       randomUUID(),
       id,
@@ -514,6 +549,7 @@ function saveFiles(items, id, user, internal = 0) {
       f.content,
       new Date().toISOString(),
       internal,
+      messageId,
     );
 }
 const chatwootQueues = new Map();
@@ -607,6 +643,268 @@ function colaboradorFromCandidate(candidate) {
   ).run(user.id, cpf, user.name, "colaborador", "Não informado", "Não informado", "!activation-required");
   return user;
 }
+// =============================================================================
+// WhatsApp do RH: atendente virtual -> chamado na central (ver whatsapp-rh.mjs)
+// =============================================================================
+const ACCEPTED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
+const formatPhone = (digits) =>
+  digits.length >= 12
+    ? `(${digits.slice(2, 4)}) ${digits.slice(4, -4)}-${digits.slice(-4)}`
+    : digits;
+/** Dono do chamado vindo do WhatsApp: um usuário por telefone, sem acesso à central. */
+function whatsappOwner(phone, contactName) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  const identifier = `whatsapp:${digits}`;
+  const existing = db.prepare("SELECT id,name FROM users WHERE identifier=?").get(identifier);
+  if (existing) return existing;
+  const raw = String(contactName || "").trim();
+  const name = raw && !/@|^\+?\d[\d\s()-]*$/.test(raw) ? raw.slice(0, 120) : `WhatsApp ${formatPhone(digits)}`;
+  const user = { id: randomUUID(), name };
+  db.prepare(
+    "INSERT INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)",
+  ).run(user.id, identifier, name, "colaborador", "WhatsApp", "Não informado", "!whatsapp");
+  return user;
+}
+/** Baixa os anexos da mensagem; o que não for PDF/JPG/PNG vira um aviso no texto. */
+async function whatsappFiles(attachments) {
+  const files = [];
+  const notes = [];
+  for (const [i, a] of attachments.slice(0, 3).entries()) {
+    try {
+      const file = await downloadAttachment(a.data_url);
+      if (!ACCEPTED_TYPES.includes(file.type)) throw new Error("tipo");
+      const ext = { "application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png" }[file.type];
+      files.push({ name: `whatsapp-${Date.now()}-${i + 1}.${ext}`, type: file.type, content: file.content });
+    } catch {
+      notes.push(`(${a.file_type === "audio" ? "áudio" : "arquivo"} recebido no WhatsApp — veja a conversa no Chatwoot)`);
+    }
+  }
+  return { files, notes };
+}
+function saveWhatsappState(conversationId, state, phone, requestId) {
+  db.prepare(
+    `INSERT INTO whatsapp_rh (conversation_id,stage,theme,invalid,request_id,phone,updated_at,data) VALUES (?,?,?,?,?,?,?,?)
+     ON CONFLICT(conversation_id) DO UPDATE SET stage=excluded.stage,theme=excluded.theme,invalid=excluded.invalid,
+     request_id=coalesce(excluded.request_id,whatsapp_rh.request_id),phone=excluded.phone,updated_at=excluded.updated_at,data=excluded.data`,
+  ).run(
+    String(conversationId),
+    state.stage,
+    state.theme ?? null,
+    state.invalid || 0,
+    requestId ?? null,
+    phone,
+    new Date().toISOString(),
+    JSON.stringify(state.data || {}),
+  );
+}
+// Identidade confirmada na Senior por conversa (só em memória, vale 30 min).
+const whatsappIdentities = new Map();
+const IDENTITY_TTL = 30 * 60000;
+async function verifyWhatsappIdentity(conversationId, step, phone) {
+  const { cpf, matricula, name } = step.verify;
+  const attempts = (step.state.data?.attempts || 0) + 1;
+  let candidate = null;
+  try {
+    candidate = await lookupCandidate({ cpf, matricula });
+  } catch (e) {
+    console.error(`WhatsApp RH conversa ${conversationId}: Senior indisponível na verificação:`, e.message);
+    saveWhatsappState(conversationId, { ...step.state, stage: "doc_cpf", data: { attempts: step.state.data?.attempts || 0 } }, phone);
+    return "A consulta à Senior está indisponível agora. Tente de novo em alguns minutos, ou envie **menu** para falar com o RH.";
+  }
+  if (candidate && sameName(name, candidate.NOMFUN)) {
+    whatsappIdentities.set(String(conversationId), { candidate, expires: Date.now() + IDENTITY_TTL });
+    saveWhatsappState(conversationId, { ...step.state, stage: "doc_mes", data: {} }, phone);
+    return verifiedText(firstName(candidate), step.state.theme);
+  }
+  if (attempts < 2) {
+    saveWhatsappState(conversationId, { ...step.state, stage: "doc_cpf", data: { attempts } }, phone);
+    return retryIdentityText;
+  }
+  saveWhatsappState(conversationId, { ...step.state, stage: "tema", theme: ticketTheme(step.state.theme), data: {} }, phone);
+  return identityFailedText(step.state.theme);
+}
+async function deliverWhatsappDocument(conversationId, step, phone) {
+  const identity = whatsappIdentities.get(String(conversationId));
+  if (!identity || identity.expires < Date.now()) {
+    whatsappIdentities.delete(String(conversationId));
+    saveWhatsappState(conversationId, { ...step.state, stage: "doc_cpf", data: { attempts: 0 } }, phone);
+    return "Por segurança, preciso confirmar seus dados de novo.\nQual é o seu **CPF**? (só os números)";
+  }
+  const { kind, month } = step.deliver;
+  const person = identity.candidate;
+  const audit = (status) =>
+    db
+      .prepare(
+        "INSERT INTO whatsapp_documents (conversation_id,phone,kind,month,numemp,numcad,status,created_at,name) VALUES (?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        String(conversationId), phone, kind, month, String(person.NUMEMP), String(person.NUMCAD), status, new Date().toISOString(),
+        String(person.NOMFUN || "").trim() || null,
+      );
+  await sendChatwootMessage(conversationId, "Consultando a Senior… isso pode levar até 1 minuto. ⏳");
+  let result;
+  try {
+    result = await consult(candidateUser(person), kind, month);
+  } catch (e) {
+    audit(`erro: ${e.message}`.slice(0, 200));
+    return `Não consegui consultar a Senior agora (${e.message}). Tente de novo em alguns minutos.
+${anotherMonthText}`;
+  }
+  const empty = kind === "holerite" ? !result.events?.length : !result.marks?.length && !result.situations?.length;
+  if (empty) {
+    audit("sem dados");
+    return `${result.notice || "Não encontrei dados para essa competência."}
+${anotherMonthText}`;
+  }
+  const names = kind === "ponto" ? await situationNames(result.situations.map((s) => s.CODSIT)).catch(() => ({})) : {};
+  const content = kind === "holerite" ? holeritePdf(result, person, month) : espelhoPdf(result, person, month, names);
+  const label = kind === "holerite" ? "Holerite" : "Espelho de ponto";
+  const competence = `${month.slice(5, 7)}/${month.slice(0, 4)}`;
+  await sendMessageWithFiles(conversationId, `📄 ${label} de ${competence}`, [
+    { name: `${label.toLowerCase().replace(/ /g, "-")}-${month}.pdf`, type: "application/pdf", content },
+  ]);
+  audit("enviado");
+  return anotherMonthText;
+}
+async function processWhatsappRh(payload, config) {
+  const conversationId = String(payload.conversation.id);
+  const phone = String(payload.sender?.phone_number || payload.conversation?.meta?.sender?.phone_number || "");
+  const text = String(payload.content || "").slice(0, 4000);
+  const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+  const row = db.prepare("SELECT * FROM whatsapp_rh WHERE conversation_id=?").get(conversationId);
+  let state = row ? { stage: row.stage, theme: row.theme, invalid: row.invalid } : null;
+  if (row?.request_id) {
+    const request = db.prepare("SELECT status FROM requests WHERE id=?").get(row.request_id);
+    const concluded = !request || request.status === "Concluída";
+    // Pesquisa de satisfação só vale para chamado concluído (se foi reaberto, volta ao chamado).
+    if (row.stage === "pesquisa") state = concluded ? state : { ...state, stage: "chamado" };
+    else if (concluded) state = { stage: "encerrado" };
+  }
+  if (state) state.data = JSON.parse(row.data || "{}");
+  const step = nextStep(state, text, { hasAttachment: attachments.length > 0 });
+  if (step.status) {
+    const digits = phone.replace(/\D/g, "");
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const requests = db
+      .prepare(
+        `SELECT r.protocol,r.subject,r.status,r.due_at,r.closed_at FROM requests r JOIN users u ON u.id=r.user_id
+         WHERE u.identifier=? AND (r.status<>'Concluída' OR r.closed_at>=?)
+         ORDER BY (r.status='Concluída'), r.created_at DESC LIMIT 6`,
+      )
+      .all(`whatsapp:${digits}`, since);
+    saveWhatsappState(conversationId, step.state, phone, null);
+    await sendChatwootMessage(conversationId, statusText(requests));
+    return;
+  }
+  if (step.rate) {
+    transaction(() => {
+      const owner = db.prepare("SELECT u.id,u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?").get(row.request_id);
+      db.prepare("UPDATE requests SET rating=?,rated_at=? WHERE id=? AND status='Concluída'").run(step.rate, new Date().toISOString(), row.request_id);
+      history(row.request_id, owner, `Atendimento avaliado pelo colaborador: ${step.rate} de 5`, "rating", { nota: step.rate });
+      saveWhatsappState(conversationId, step.state, phone, null);
+    });
+    await sendChatwootMessage(conversationId, ratingThanksText(step.rate));
+    return;
+  }
+  if (step.identity) {
+    // Identidade confirmada há menos de 30 min nesta conversa: vai direto ao mês.
+    const identity = whatsappIdentities.get(conversationId);
+    if (identity && identity.expires > Date.now()) {
+      saveWhatsappState(conversationId, { ...step.state, stage: "doc_mes", data: {} }, phone);
+      await sendChatwootMessage(conversationId, rememberedText(firstName(identity.candidate), step.state.theme));
+      return;
+    }
+  }
+  if (step.verify) {
+    await sendChatwootMessage(conversationId, await verifyWhatsappIdentity(conversationId, step, phone));
+    return;
+  }
+  if (step.deliver) {
+    await sendChatwootMessage(conversationId, await deliverWhatsappDocument(conversationId, step, phone));
+    return;
+  }
+  if (step.remind && row?.request_id) {
+    const { protocol } = db.prepare("SELECT protocol FROM requests WHERE id=?").get(row.request_id);
+    await sendChatwootMessage(conversationId, ticketOpenReminderText(protocol));
+    return;
+  }
+  if (step.append || step.open) {
+    const { files, notes } = await whatsappFiles(attachments);
+    const body = [text.trim(), ...notes].filter(Boolean).join("\n") || "(anexo enviado pelo WhatsApp)";
+    if (step.append) {
+      transaction(() => {
+        const owner = db.prepare("SELECT u.id,u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?").get(row.request_id);
+        const status = db.prepare("SELECT status FROM requests WHERE id=?").get(row.request_id).status;
+        const now = new Date().toISOString();
+        const messageId = randomUUID();
+        db.prepare("INSERT INTO messages (id,request_id,user_id,body,created_at,internal) VALUES (?,?,?,?,?,0)").run(
+          messageId, row.request_id, owner.id, body, now,
+        );
+        saveFiles(files, row.request_id, owner, 0, messageId);
+        history(row.request_id, owner, "Mensagem enviada pelo colaborador (WhatsApp)", "message", { attachments: files.length });
+        if (status === "Aguardando colaborador") {
+          db.prepare("UPDATE requests SET status='Em atendimento' WHERE id=?").run(row.request_id);
+          history(row.request_id, owner, "Informações enviadas pelo colaborador", "status", {
+            from: "Aguardando colaborador",
+            to: "Em atendimento",
+          });
+        }
+        db.prepare("UPDATE requests SET updated_at=? WHERE id=?").run(now, row.request_id);
+        saveWhatsappState(conversationId, step.state, phone, row.request_id);
+      });
+      return;
+    }
+    const theme = THEMES[step.state.theme ?? 0];
+    const openedAt = Date.now();
+    const dueMs = businessDeadline(openedAt, config.deadlineHours, config.holidays);
+    const due = new Date(dueMs).toISOString();
+    const created = transaction(() => {
+      const owner = whatsappOwner(phone, payload.sender?.name);
+      const request = insertRequest(owner, theme.serviceId, theme.title, body, {
+        Origem: "WhatsApp",
+        Telefone: formatPhone(phone.replace(/\D/g, "")),
+      });
+      db.prepare("UPDATE requests SET due_at=?,chatwoot_conversation_id=? WHERE id=?").run(due, conversationId, request.id);
+      saveFiles(files, request.id, owner);
+      history(request.id, owner, "Solicitação aberta pelo atendente virtual do WhatsApp", "created", {
+        origem: "whatsapp",
+        conversa: conversationId,
+        prazo: due,
+      });
+      saveWhatsappState(conversationId, step.state, phone, request.id);
+      return request;
+    });
+    await sendChatwootMessage(
+      conversationId,
+      ticketOpenedText(created.protocol, step.state.theme ?? 0, {
+        dueMs,
+        offHours: !withinOfficeHours(openedAt, config),
+        officeHours: config.officeHours,
+      }),
+    );
+    return;
+  }
+  saveWhatsappState(conversationId, step.state, phone, null);
+  if (step.reply) await sendChatwootMessage(conversationId, step.reply);
+}
+/** Chamado do WhatsApp concluído na central: avisa o colaborador e encerra a conversa. */
+async function closeWhatsappTicket(request) {
+  const conversationId = request.chatwoot_conversation_id;
+  const row = conversationId && db.prepare("SELECT request_id,stage FROM whatsapp_rh WHERE conversation_id=?").get(String(conversationId));
+  if (!row) return;
+  // Só pergunta a nota e encerra a conversa se o colaborador não estiver no meio
+  // de outro assunto (menu, holerite...).
+  const survey = row.request_id === request.id && row.stage === "chamado";
+  await sendChatwootMessage(conversationId, ticketClosedText(request.protocol, { survey }));
+  if (survey) {
+    db.prepare("UPDATE whatsapp_rh SET stage='pesquisa',updated_at=? WHERE conversation_id=?").run(
+      new Date().toISOString(),
+      String(conversationId),
+    );
+    await resolveConversation(conversationId);
+  }
+}
+
 function transaction(fn) {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -904,10 +1202,54 @@ http
             (payload.event === "conversation_status_changed" && payload.status === "resolved")) &&
           payload.id
         ) {
+          // Conversa do WhatsApp RH resolvida no Chatwoot: o chamado é concluído e o colaborador avisado.
+          const whatsappOpen = db.prepare("SELECT 1 FROM whatsapp_rh WHERE conversation_id=?").get(String(payload.id))
+            ? db
+                .prepare("SELECT protocol,chatwoot_conversation_id FROM requests WHERE chatwoot_conversation_id=? AND status<>'Concluída'")
+                .all(String(payload.id))
+            : [];
           transaction(() =>
             closeFromChatwoot(db, history, payload.id, payload.meta?.assignee?.name),
           );
+          for (const request of whatsappOpen) {
+            db.prepare("UPDATE whatsapp_rh SET stage='encerrado',updated_at=? WHERE conversation_id=?").run(
+              new Date().toISOString(),
+              String(payload.id),
+            );
+            await sendChatwootMessage(payload.id, ticketClosedText(request.protocol)).catch((e) =>
+              console.error(`WhatsApp RH conversa ${payload.id}:`, e.message),
+            );
+          }
           return json(res, 200, { ok: true, mirrored: true });
+        }
+        // WhatsApp do RH: atendente virtual da central (menu -> chamado). Trata toda
+        // mensagem recebida da caixa, em qualquer status, porque depois de aberto o
+        // chamado as mensagens do colaborador continuam entrando nele.
+        const whatsapp = whatsappConfig();
+        if (
+          payload.event === "message_created" &&
+          payload.message_type === "incoming" &&
+          !payload.private &&
+          payload.conversation?.id &&
+          Number(payload.inbox?.id ?? payload.conversation?.inbox_id) === whatsapp.inboxId
+        ) {
+          const conversationId = payload.conversation.id;
+          const phone = payload.sender?.phone_number || payload.conversation?.meta?.sender?.phone_number;
+          if (!phoneAllowed(phone, whatsapp)) {
+            // Modo teste: contato fora da lista vai direto para as atendentes no Chatwoot.
+            if (payload.conversation.status === "pending") await handToHuman(conversationId).catch(() => {});
+            return json(res, 200, { ok: true, skipped: true });
+          }
+          if (!chatAllowed(`wa-${conversationId}`)) return json(res, 200, { ok: true, skipped: true });
+          const previous = chatwootQueues.get(conversationId) || Promise.resolve();
+          const next = previous
+            .then(() => processWhatsappRh(payload, whatsapp))
+            .catch((e) => console.error(`WhatsApp RH conversa ${conversationId}:`, e.message))
+            .finally(() => {
+              if (chatwootQueues.get(conversationId) === next) chatwootQueues.delete(conversationId);
+            });
+          chatwootQueues.set(conversationId, next);
+          return json(res, 200, { ok: true, accepted: true });
         }
         // O Chatwoot manda ao bot toda mensagem da caixa, inclusive depois que
         // a conversa passou para uma atendente ("open"): o bot só fala enquanto
@@ -1284,6 +1626,45 @@ http
         }
         if (pathname === "/api/me" && req.method === "GET")
           return json(res, 200, { user: publicUser(user) });
+        if (pathname === "/api/whatsapp/status" && req.method === "GET") {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          return json(res, 200, wahaWatchdog.getHealth());
+        }
+        if (pathname === "/api/whatsapp/documents" && req.method === "GET") {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 30, 1), 3650);
+          const since = new Date(Date.now() - days * 86400000).toISOString();
+          return json(res, 200, {
+            documents: db
+              .prepare(
+                `SELECT d.id,d.kind,d.month,d.status,d.created_at,d.numcad,d.phone,
+                        coalesce(d.name,(SELECT u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.chatwoot_conversation_id=d.conversation_id ORDER BY r.created_at DESC LIMIT 1)) name
+                 FROM whatsapp_documents d WHERE d.created_at>=? ORDER BY d.id DESC LIMIT 1000`,
+              )
+              .all(since)
+              .map((d) => ({ ...d, phone: formatPhone(String(d.phone || "").replace(/\D/g, "")) })),
+          });
+        }
+        const templateMatch = pathname.match(/^\/api\/reply-templates(?:\/(\d+))?$/);
+        if (templateMatch) {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          if (!templateMatch[1] && req.method === "GET")
+            return json(res, 200, { templates: db.prepare("SELECT id,title,body FROM reply_templates ORDER BY title COLLATE NOCASE").all() });
+          if (!templateMatch[1] && req.method === "POST") {
+            const input = await body(req);
+            const title = text(input.title, 80, "título");
+            const content = text(input.body, 4000, "texto");
+            const result = db
+              .prepare("INSERT INTO reply_templates (title,body,created_by,created_at) VALUES (?,?,?,?)")
+              .run(title, content, user.id, new Date().toISOString());
+            return json(res, 201, { template: { id: Number(result.lastInsertRowid), title, body: content } });
+          }
+          if (templateMatch[1] && req.method === "DELETE") {
+            db.prepare("DELETE FROM reply_templates WHERE id=?").run(Number(templateMatch[1]));
+            return json(res, 200, { ok: true });
+          }
+          fail(405, "Método não permitido.");
+        }
         if (pathname === "/api/team" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
           return json(res, 200, {
@@ -1394,9 +1775,28 @@ http
                 .map((row) => ({ ...row, data: JSON.parse(row.data) })),
               attachments: db
                 .prepare(
-                  "SELECT id,name,type,length(content) size,created_at,internal FROM attachments WHERE request_id=? AND (internal=0 OR ?=1) ORDER BY created_at",
+                  "SELECT id,name,type,length(content) size,created_at,internal,message_id FROM attachments WHERE request_id=? AND (internal=0 OR ?=1) ORDER BY created_at",
                 )
                 .all(id, user.role === "rh" ? 1 : 0),
+              // RH: outros chamados da mesma pessoa e documentos que ela recebeu pelo WhatsApp.
+              ...(user.role === "rh"
+                ? {
+                    related: {
+                      requests: db
+                        .prepare(
+                          "SELECT id,protocol,subject,status,created_at,rating FROM requests WHERE user_id=? AND id<>? ORDER BY created_at DESC LIMIT 20",
+                        )
+                        .all(request.user_id, id),
+                      documents: request.chatwoot_conversation_id
+                        ? db
+                            .prepare(
+                              "SELECT id,kind,month,status,created_at FROM whatsapp_documents WHERE conversation_id=? ORDER BY id DESC LIMIT 20",
+                            )
+                            .all(String(request.chatwoot_conversation_id))
+                        : [],
+                    },
+                  }
+                : {}),
             });
           }
           if (match[2] && req.method === "POST") {
@@ -1406,23 +1806,25 @@ http
                 "Esta solicitação está concluída. Abra uma nova solicitação, se necessário.",
               );
             const input = await body(req);
-            const message = text(input.body, 10000, "mensagem");
             const attachments = files(input.attachments);
+            // Só anexo, sem texto: vale para o RH mandar um documento ao colaborador.
+            const message = text(input.body, 10000, "mensagem", attachments.length === 0) || "📎 Segue o anexo.";
             if (input.internal && user.role !== "rh")
               fail(403, "Notas internas são exclusivas do RH.");
             const internal = input.internal ? 1 : 0;
             transaction(() => {
+              const messageId = randomUUID();
               db.prepare(
                 "INSERT INTO messages (id,request_id,user_id,body,created_at,internal) VALUES (?,?,?,?,?,?)",
               ).run(
-                randomUUID(),
+                messageId,
                 id,
                 user.id,
                 message,
                 new Date().toISOString(),
                 internal,
               );
-              saveFiles(attachments, id, user, internal);
+              saveFiles(attachments, id, user, internal, messageId);
               history(
                 id,
                 user,
@@ -1456,6 +1858,30 @@ http
                 id,
               );
             });
+            // Chamado vindo do WhatsApp: a resposta pública do RH sai no WhatsApp do colaborador.
+            if (
+              user.role === "rh" &&
+              !internal &&
+              request.chatwoot_conversation_id &&
+              db.prepare("SELECT 1 FROM whatsapp_rh WHERE conversation_id=?").get(String(request.chatwoot_conversation_id))
+            ) {
+              try {
+                await sendMessageWithFiles(
+                  request.chatwoot_conversation_id,
+                  `${message}
+— ${user.name}, RH Frizelo`,
+                  attachments,
+                );
+              } catch (e) {
+                transaction(() =>
+                  history(id, user, "Falha ao enviar a resposta pelo WhatsApp", "whatsapp_error", { erro: e.message }, 1),
+                );
+                return json(res, 201, {
+                  ok: true,
+                  warning: "Resposta salva, mas não foi possível enviá-la pelo WhatsApp agora. Tente novamente.",
+                });
+              }
+            }
             return json(res, 201, { ok: true });
           }
           if (!match[2] && req.method === "PATCH") {
@@ -1603,6 +2029,20 @@ http
                 id,
               );
             });
+            // Concluído na central: o colaborador do WhatsApp recebe o aviso e a conversa é encerrada.
+            if (input.status === "Concluída" && request.status !== "Concluída") {
+              try {
+                await closeWhatsappTicket(request);
+              } catch (e) {
+                transaction(() =>
+                  history(id, user, "Falha ao avisar o colaborador pelo WhatsApp", "whatsapp_error", { erro: e.message }, 1),
+                );
+                return json(res, 200, {
+                  ok: true,
+                  warning: "Chamado concluído, mas não foi possível avisar o colaborador pelo WhatsApp.",
+                });
+              }
+            }
             return json(res, 200, { ok: true });
           }
         }
@@ -1650,3 +2090,10 @@ http
       `Central Frizelo: ${origin} (escutando em ${process.env.CENTRAL_HOST || "127.0.0.1"})`,
     ),
   );
+// Vigia da sessão do WhatsApp (WAHA): reinicia sozinho quando ela trava.
+const wahaWatchdog = startWahaWatchdog({ chatwootBase: chatwootConfiguration().base });
+console.log(
+  wahaWatchdog.getHealth().enabled
+    ? "Vigia do WhatsApp (WAHA) ligado."
+    : "Vigia do WhatsApp (WAHA) desligado: defina WAHA_API_KEY no .env.local.",
+);

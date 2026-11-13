@@ -22,6 +22,7 @@ test("atendimento: uma sessão bloqueada não pode ser reaberta com 'reiniciar'"
     cwd: process.cwd(),
     env: {
       ...process.env,
+      WAHA_WATCHDOG: "off",
       CENTRAL_DATA_DIR: directory,
       CENTRAL_PORT: String(port),
     },

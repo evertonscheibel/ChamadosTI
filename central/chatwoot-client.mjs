@@ -105,3 +105,49 @@ export function handToHuman(conversationId) {
     status: "open",
   });
 }
+
+/** Resolve a conversa (a próxima mensagem do contato abre uma conversa nova no WAHA). */
+export function resolveConversation(conversationId) {
+  return conversationApi(conversationId, "/toggle_status", "POST", {
+    status: "resolved",
+  });
+}
+
+/** Mensagem de saída com anexos ({ name, type, content: Buffer }), via multipart. */
+export async function sendMessageWithFiles(conversationId, content, files) {
+  if (!files?.length) return sendMessage(conversationId, content);
+  const config = configuration();
+  if (!config.enabled) throw error("Integração Chatwoot não configurada.", 503);
+  const form = new FormData();
+  form.append("content", content);
+  form.append("message_type", "outgoing");
+  for (const f of files)
+    form.append("attachments[]", new Blob([f.content], { type: f.type }), f.name);
+  let response;
+  try {
+    response = await fetch(
+      `${config.base.replace(/\/+$/, "")}/api/v1/accounts/${config.accountId}/conversations/${conversationId}/messages`,
+      { method: "POST", headers: { api_access_token: config.botToken }, body: form, signal: AbortSignal.timeout(60000) },
+    );
+  } catch {
+    throw error("Não foi possível falar com o Chatwoot agora.", 503);
+  }
+  if (!response.ok) throw error(`O Chatwoot recusou a mensagem (${response.status}).`, 502);
+  return response.json();
+}
+
+/**
+ * Baixa um anexo recebido. Só o caminho do data_url é usado, sempre contra o
+ * endereço configurado do Chatwoot (nunca um host vindo do payload).
+ */
+export async function downloadAttachment(dataUrl, maxBytes = 5 * 1024 * 1024) {
+  const config = configuration();
+  if (!config.enabled) throw error("Integração Chatwoot não configurada.", 503);
+  const source = new URL(dataUrl);
+  const target = new URL(source.pathname + source.search, config.base);
+  const response = await fetch(target, { signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw error(`Anexo indisponível (${response.status}).`, 502);
+  const content = Buffer.from(await response.arrayBuffer());
+  if (content.length > maxBytes) throw error("Anexo acima do limite.", 413);
+  return { type: (response.headers.get("content-type") || "").split(";")[0].trim(), content };
+}

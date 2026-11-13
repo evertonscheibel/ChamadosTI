@@ -14,6 +14,9 @@ type Report = {
   resolutionSample: number;
   withinDeadline: number;
   deadlineSample: number;
+  ratingAverage: number | null;
+  ratingSample: number;
+  ratingSurveyed: number;
   missingClosedDate: number;
   services: {
     id: string;
@@ -39,7 +42,8 @@ export default function Management({
   onQueue: (name: string) => void;
 }) {
   const [days, setDays] = useState("30");
-  const [demo, setDemo] = useState(false);
+  // Dados fictícios de demonstração ficam sempre fora dos indicadores.
+  const demo = false;
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -74,7 +78,7 @@ export default function Management({
     >
       <div className="section-heading">
         <div>
-          <h2>Indicadores de gestão</h2>
+          <h1>Indicadores</h1>
           <p>
             Entradas e conclusões no período; fila e atrasos na situação atual.
           </p>
@@ -95,14 +99,6 @@ export default function Management({
               ))}
             </select>
           </label>
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={demo}
-              onChange={(e) => setDemo(e.target.checked)}
-            />
-            Incluir demonstração
-          </label>
           <button
             className="button secondary"
             disabled={loading || exporting || !report}
@@ -121,14 +117,14 @@ export default function Management({
               }
             }}
           >
-            {exporting ? "Exportando…" : "Exportar indicadores"}
+            {exporting ? "Exportando…" : "Exportar CSV"}
           </button>
           <button
             className="button secondary"
             disabled={loading}
             onClick={() => setRefresh(refresh + 1)}
           >
-            Atualizar indicadores
+            Atualizar
           </button>
         </div>
       </div>
@@ -157,10 +153,10 @@ export default function Management({
               ))}
             </div>
             <div className="queue-overview">
-              <button onClick={() => onQueue("Não atribuídas")}>
+              <button onClick={() => onQueue("sem")}>
                 <strong>{report.unassigned}</strong> sem responsável
               </button>
-              <button onClick={() => onQueue("Prazo ultrapassado")}>
+              <button onClick={() => onQueue("atrasados")}>
                 <strong>{report.overdue}</strong> com prazo ultrapassado
               </button>
             </div>
@@ -190,6 +186,18 @@ export default function Management({
                 <small>
                   {report.withinDeadline} de {report.deadlineSample} com prazo
                   registrado no encerramento
+                </small>
+              </div>
+              <div className="management-kpi">
+                <strong>
+                  {report.ratingAverage === null
+                    ? "Sem notas"
+                    : `${report.ratingAverage.toLocaleString("pt-BR")} de 5`}
+                </strong>
+                <span>Satisfação (WhatsApp)</span>
+                <small>
+                  {report.ratingSample} notas de {report.ratingSurveyed} chamados
+                  concluídos pelo WhatsApp
                 </small>
               </div>
             </div>
