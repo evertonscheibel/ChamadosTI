@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup do atendimento do RH (central, Chatwoot e WhatsApp)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/apps/frizelo-rh/backup.sh

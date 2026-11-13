@@ -1,0 +1,109 @@
+# Atendimento do RH pelo WhatsApp — servidor bridge-prod (10.1.1.53)
+# Pasta no servidor: /opt/apps/frizelo-rh   (segredos em *.env, modo 600, fora do Git)
+#
+# Portas: nada é publicado na rede direto pelo Docker (o Docker passaria por cima do ufw).
+# Tudo fica em 127.0.0.1 e o nginx do servidor expõe, respeitando o ufw:
+#   45873 -> central (RH)            3100 -> Chatwoot (administração)
+name: frizelo-rh
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks: [rh]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+  security_opt: [no-new-privileges:true]
+
+x-chatwoot: &chatwoot
+  <<: *defaults
+  image: ${CHATWOOT_IMAGE}
+  env_file: chatwoot.env
+  volumes: [./state/chatwoot-storage:/app/storage]
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    <<: *defaults
+    image: ${POSTGRES_IMAGE}
+    mem_limit: 768m
+    environment:
+      POSTGRES_USER: chatwoot
+      POSTGRES_DB: chatwoot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [./state/postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U chatwoot -d chatwoot"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    <<: *defaults
+    image: ${REDIS_IMAGE}
+    mem_limit: 256m
+    command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    environment: { REDIS_PASSWORD: "${REDIS_PASSWORD}" }
+    volumes: [./state/redis:/data]
+    healthcheck:
+      test: [CMD-SHELL, 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  chatwoot:
+    <<: *chatwoot
+    mem_limit: 1536m
+    command: [sh, -c, "rm -f /app/tmp/pids/server.pid && bundle exec rails s -b 0.0.0.0 -p 3000"]
+    ports: ["127.0.0.1:3101:3000"]
+    healthcheck:
+      test: [CMD-SHELL, "wget -qO- http://127.0.0.1:3000/api >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+
+  sidekiq:
+    <<: *chatwoot
+    mem_limit: 1024m
+    command: [bundle, exec, sidekiq, -C, config/sidekiq.yml]
+
+  waha:
+    <<: *defaults
+    image: ${WAHA_IMAGE}
+    mem_limit: 1024m
+    shm_size: 256m
+    env_file: waha.env
+    ports: ["127.0.0.1:3102:3000"]
+    volumes:
+      - ./state/waha-sessions:/app/.sessions
+      - ./state/waha-media:/app/.media
+    depends_on:
+      redis: { condition: service_healthy }
+
+  central:
+    <<: *defaults
+    image: frizelo-rh-central:${CENTRAL_TAG}
+    build: { context: ./release, dockerfile: ../Dockerfile.central }
+    mem_limit: 512m
+    env_file: central.env
+    environment:
+      CENTRAL_HOST: 0.0.0.0
+      CENTRAL_PORT: "45873"
+      CENTRAL_DATA_DIR: /app/data
+      CENTRAL_DEMO: "off"
+      SENIOR_ENV_FILE: /run/senior/senior.env
+      TZ: America/Campo_Grande
+    ports: ["127.0.0.1:45874:45873"]
+    volumes:
+      - ./state/central-data:/app/data
+      - ./central.env:/app/.env.local:ro
+      - /opt/apps/senior-hcm-connector/.env:/run/senior/senior.env:ro
+    depends_on: [chatwoot, waha]
+
+networks:
+  rh:
+    name: frizelo-rh
+    ipam:
+      config: [{ subnet: 172.31.53.0/24 }]

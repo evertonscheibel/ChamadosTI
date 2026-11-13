@@ -9,6 +9,11 @@ const directory =
   fileURLToPath(new URL("../data/", import.meta.url));
 mkdirSync(directory, { recursive: true });
 export const db = new DatabaseSync(`${directory}/central.sqlite`);
+// WAL + synchronous=NORMAL: não corrompe o banco; numa queda de energia pode perder só a última
+// fração de segundo. Com FULL, cada gravação esperava o disco (~44 ms no servidor) e travava a central.
+// CENTRAL_SQLITE_SYNC=FULL volta ao modo antigo.
+const sync = process.env.CENTRAL_SQLITE_SYNC === "FULL" ? "FULL" : "NORMAL";
+db.exec(`PRAGMA synchronous=${sync}; PRAGMA busy_timeout=5000;`);
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, identifier TEXT UNIQUE NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('colaborador','rh')), unit TEXT NOT NULL, department TEXT NOT NULL, password_hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires INTEGER NOT NULL);
@@ -121,3 +126,10 @@ insert.run(
   "Recursos Humanos",
   hashPassword("FrizeloDemo!2026"),
 );
+// Produção (CENTRAL_DEMO=off): as contas de demonstração continuam no banco (o
+// histórico aponta para elas), mas ninguém consegue mais entrar com elas.
+export const demoAccountsLocked = process.env.CENTRAL_DEMO === "off";
+if (demoAccountsLocked) {
+  db.prepare("UPDATE users SET password_hash='bloqueado' WHERE id IN ('demo-colaborador','demo-rh')").run();
+  db.prepare("DELETE FROM sessions WHERE user_id IN ('demo-colaborador','demo-rh')").run();
+}

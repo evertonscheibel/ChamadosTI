@@ -1,0 +1,16 @@
+# Central de Relacionamentos (Node 24, mesma versão usada em homologação).
+# Contexto de build: ./release (código + dist já gerado por "npm run build").
+FROM node:24.22.1-slim
+ENV NODE_ENV=production TZ=America/Campo_Grande
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY central ./central
+COPY scripts ./scripts
+COPY dist ./dist
+RUN mkdir -p /app/data && chown -R node:node /app/data
+USER node
+EXPOSE 45873
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:45873/api/me').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "scripts/serve.mjs"]

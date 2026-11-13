@@ -63,6 +63,7 @@ import {
 import { recoverMissed } from "./whatsapp-recovery.mjs";
 import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
 import { startWahaWatchdog } from "./waha-watchdog.mjs";
+import { allowedOrigins } from "./origins.mjs";
 import { createEmailAlerts } from "./email-alerts.mjs";
 import {
   whatsappConfig,
@@ -98,6 +99,8 @@ initializeLinks(db);
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const port = Number(process.env.CENTRAL_PORT || 45873);
 const origin = `http://127.0.0.1:${port}`;
+// Endereços de onde o navegador pode enviar (local + CENTRAL_URL/CENTRAL_ORIGINS, ex.: http://10.1.1.53:45873).
+const acceptedOrigins = allowedOrigins(port);
 const types = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -1212,8 +1215,7 @@ http
       // rota — não pelo cabeçalho Origin usado contra CSRF nas demais rotas.
       if (
         !["GET", "HEAD"].includes(req.method) &&
-        req.headers.origin !== origin &&
-        req.headers.origin !== `http://localhost:${port}` &&
+        !acceptedOrigins.has(req.headers.origin) &&
         pathname !== "/api/chatwoot/webhook"
       )
         fail(403, "Origem do envio não autorizada.");
