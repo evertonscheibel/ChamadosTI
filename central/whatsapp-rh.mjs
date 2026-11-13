@@ -30,6 +30,8 @@ export function whatsappConfig(env) {
     // Modo teste: só telefones que contêm um destes trechos. "todos" libera geral.
     testPhones: list(settings.WHATSAPP_RH_TELEFONES_TESTE ?? "98969836"),
     deadlineHours: Number(settings.WHATSAPP_RH_PRAZO_HORAS || 48),
+    // Primeira resposta do RH: horas dentro do expediente (não corre à noite nem no fim de semana).
+    firstResponseHours: Number(settings.PRIMEIRA_RESPOSTA_HORAS || 4),
     holidays: list(settings.WHATSAPP_RH_FERIADOS),
     // Expediente do RH (seg–sex), só para avisar quem escreve fora dele. Ex.: 07:00-17:00
     officeHours: parseOfficeHours(settings.WHATSAPP_RH_EXPEDIENTE),
@@ -85,6 +87,57 @@ export function businessElapsed(fromMs, toMs, holidays = []) {
     t = end;
   }
   return total;
+}
+
+// --- Primeira resposta: relógio só dentro do expediente ------------------------
+const officeWindow = (day, officeHours) => [day * DAY + OFFSET + officeHours[0] * 60000, day * DAY + OFFSET + officeHours[1] * 60000];
+/** Instante em que vencem `hours` horas de expediente a partir de `startMs`. */
+export function officeDeadline(startMs, hours, { officeHours = [7 * 60, 17 * 60], holidays = [] } = {}) {
+  let remaining = hours * 3600000;
+  let t = startMs;
+  for (let guard = 0; guard < 4000; guard++) {
+    const day = localDay(t);
+    if (businessDay(day, holidays)) {
+      const [open, close] = officeWindow(day, officeHours);
+      if (t < open) t = open;
+      if (t < close) {
+        if (remaining <= close - t) return t + remaining;
+        remaining -= close - t;
+      }
+    }
+    t = dayEnd(day);
+  }
+  return t;
+}
+/** Milissegundos de expediente entre dois instantes. */
+export function officeElapsed(fromMs, toMs, { officeHours = [7 * 60, 17 * 60], holidays = [] } = {}) {
+  let total = 0;
+  for (let t = fromMs; t < toMs; ) {
+    const day = localDay(t);
+    if (businessDay(day, holidays)) {
+      const [open, close] = officeWindow(day, officeHours);
+      const start = Math.max(t, open);
+      const end = Math.min(toMs, close);
+      if (end > start) total += end - start;
+    }
+    t = dayEnd(day);
+  }
+  return total;
+}
+/**
+ * Situação da primeira resposta do RH.
+ * level: respondido | ok | perto (último quarto do prazo) | atrasado.
+ */
+export function firstResponseStatus(createdAt, answeredAt, now = Date.now(), { hours = 4, officeHours, holidays } = {}) {
+  const created = Date.parse(createdAt);
+  if (!Number.isFinite(created)) return null;
+  const office = { officeHours, holidays };
+  const due = officeDeadline(created, hours, office);
+  const answered = answeredAt ? Date.parse(answeredAt) : NaN;
+  if (Number.isFinite(answered)) return { due_at: new Date(due).toISOString(), level: "respondido", late: answered > due };
+  if (now >= due) return { due_at: new Date(due).toISOString(), level: "atrasado", late: true };
+  const left = officeElapsed(now, due, office);
+  return { due_at: new Date(due).toISOString(), level: left <= hours * 3600000 * 0.25 ? "perto" : "ok", late: false, left_ms: left };
 }
 
 /**

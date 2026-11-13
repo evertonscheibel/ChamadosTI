@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Bell, BellOff, BellRing, X, AlertTriangle, Inbox, WifiOff, Repeat } from "lucide-react";
+import { MessageSquareText } from "lucide-react";
 import { displayName, remaining, type QueueRequest } from "./RhQueue";
 
-type Alert = { key: string; id: string; kind: "novo" | "laranja" | "vermelho"; title: string; body: string };
+type Alert = { key: string; id: string; kind: "novo" | "mensagem" | "laranja" | "vermelho"; title: string; body: string };
+type Seen = { level: number; last: string; late: boolean };
 const RANK = { verde: 0, amarelo: 1, laranja: 2, vermelho: 3 } as const;
 const SOUND_KEY = "central-alert-sound";
 const REMINDER_KEY = "central-alert-reminder";
@@ -68,7 +70,7 @@ const store = (key: string, on: boolean) => {
  * Enquanto houver chamado recebido sem ninguém, lembra a cada 2 minutos.
  */
 export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpen?: (id: string) => void) {
-  const seen = useRef<Map<string, number> | null>(null);
+  const seen = useRef<Map<string, Seen> | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [sound, setSound] = useState(() => stored(SOUND_KEY));
   const [reminder, setReminder] = useState(() => stored(REMINDER_KEY));
@@ -84,15 +86,39 @@ export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpe
     }
     const open = requests.filter((r) => r.status !== "Concluída");
     const level = (r: QueueRequest) => (r.sla ? RANK[r.sla.level] : -1);
+    const snapshot = (r: QueueRequest): Seen => ({
+      level: level(r),
+      last: r.last_message_at || "",
+      late: r.first_response?.level === "atrasado",
+    });
     // Primeira carga (ou recarga da página): só memoriza, sem avisar do que já estava na fila.
     if (!seen.current) {
-      seen.current = new Map(open.map((r) => [r.id, level(r)]));
+      seen.current = new Map(open.map((r) => [r.id, snapshot(r)]));
       return;
     }
     const fresh: Alert[] = [];
     for (const r of open) {
-      const before = seen.current.get(r.id);
+      const previous = seen.current.get(r.id);
+      const before = previous?.level;
       const now = level(r);
+      const current = snapshot(r);
+      if (previous && r.needs_reply && current.last > previous.last)
+        // Colaborador escreveu de novo num chamado que já existia.
+        fresh.push({
+          key: `${r.id}-msg-${current.last}`,
+          id: r.id,
+          kind: "mensagem",
+          title: `Nova mensagem: ${r.protocol}`,
+          body: `${displayName(r)} · ${r.subject}`,
+        });
+      if (previous && current.late && !previous.late)
+        fresh.push({
+          key: `${r.id}-primeira`,
+          id: r.id,
+          kind: "vermelho",
+          title: `1ª resposta atrasada: ${r.protocol}`,
+          body: `${r.subject} · ${displayName(r)} ainda não recebeu resposta`,
+        });
       if (before === undefined)
         fresh.push({
           key: `${r.id}-novo`,
@@ -109,13 +135,14 @@ export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpe
           title: now === RANK.vermelho ? `Prazo estourado: ${r.protocol}` : `Prazo perto do fim: ${r.protocol}`,
           body: `${r.subject} · ${r.due_at ? remaining(r.due_at) : ""}`,
         });
-      seen.current.set(r.id, now);
+      seen.current.set(r.id, current);
     }
     if (!fresh.length) return;
     setAlerts((current) => [...fresh, ...current.filter((a) => !fresh.some((f) => f.key === a.key))].slice(0, 5));
     if (sound) beep(fresh.some((a) => a.kind === "vermelho"));
     for (const a of fresh) popup(a.title, a.body, a.key, a.kind !== "laranja", () => openRef.current?.(a.id));
-    if (!document.hasFocus()) setFlash(fresh[0].kind === "novo" ? "🔔 Novo chamado" : "⚠️ Prazo crítico");
+    if (!document.hasFocus())
+      setFlash({ novo: "🔔 Novo chamado", mensagem: "💬 Nova mensagem", laranja: "⚠️ Prazo crítico", vermelho: "⚠️ Prazo crítico" }[fresh[0].kind]);
   }, [requests, active]);
 
   // Lembrete: chamado recebido e ninguém assumiu. Repete a cada 2 minutos até alguém pegar.
@@ -196,7 +223,7 @@ export function AlertToasts({
               if (a.id) onOpen(a.id);
             }}
           >
-            {a.kind === "novo" ? <Inbox size={18} /> : <AlertTriangle size={18} />}
+            {a.kind === "novo" ? <Inbox size={18} /> : a.kind === "mensagem" ? <MessageSquareText size={18} /> : <AlertTriangle size={18} />}
             <span>
               <strong>{a.title}</strong>
               <small>{a.body}</small>

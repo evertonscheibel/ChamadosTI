@@ -3764,3 +3764,184 @@ button.q-main:focus-visible {
     display: none;
   }
 }
+
+/* ===== Vez do RH: 1ª resposta e nova mensagem ===== */
+.q-status {
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+.queue-row.v3.queue-header > .q-status {
+  display: block !important;
+}
+.reply-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.reply-ok {
+  background: #eef3fb;
+  color: #2f5e9e;
+}
+.reply-perto {
+  background: #fdf0dc;
+  color: #a35a00;
+}
+.reply-atrasado {
+  background: #fbe2df;
+  color: #a3271b;
+}
+.reply-new {
+  background: #e6f3ea;
+  color: #1f6b3a;
+}
+.reply-new::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+@media (max-width: 720px) {
+  .q-status {
+    align-items: flex-end;
+  }
+}
+.toast-mensagem {
+  border-left-color: #2e8b57;
+}
+.toast-mensagem .toast-body svg {
+  color: #2e8b57;
+}
+.first-response {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--hairline);
+}
+.first-response.late {
+  color: var(--sla-vermelho);
+  font-weight: 600;
+}
+.owners-card {
+  margin: 18px 0;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+.owners-card h2 {
+  font-size: 17px;
+}
+.owners-card > p {
+  margin: 4px 0 12px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.owners-card td small {
+  color: var(--ink-soft);
+}
+.owners-card .cell-alert {
+  color: var(--sla-vermelho);
+  font-weight: 700;
+}
+
+/* ===== Entrega da resposta no WhatsApp ===== */
+.bubble footer.delivery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.delivery-wa-enviado {
+  color: #1f6b3a !important;
+}
+.delivery-wa-falhou {
+  color: #a35a00 !important;
+  font-weight: 600;
+}
+.delivery-wa-nao_entregue {
+  color: #a3271b !important;
+  font-weight: 700;
+}
+.bubble footer.delivery button {
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: var(--surface);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ===== Mídia dentro da conversa ===== */
+.bubble-files {
+  align-items: flex-start;
+}
+.media-image {
+  display: block;
+  max-width: 240px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  line-height: 0;
+}
+.media-image img {
+  width: 100%;
+  max-height: 240px;
+  object-fit: cover;
+}
+.media-audio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.media-audio audio {
+  height: 38px;
+  max-width: 280px;
+}
+.media-audio a {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--ink-soft);
+}
+.media-video video {
+  display: block;
+  max-width: min(320px, 100%);
+  max-height: 240px;
+  border-radius: 8px;
+  background: #000;
+}
+.bubble-files .media-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--hairline);
+  color: var(--ink);
+  font-size: 12px;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.bubble-files .media-file small {
+  color: var(--ink-soft);
+}
+.bubble-files .media-file:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}

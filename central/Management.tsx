@@ -25,7 +25,18 @@ type Report = {
     open: number;
     closed: number;
   }[];
-  owners: { id: string; name: string; open: number; overdue: number }[];
+  owners: {
+    id: string;
+    name: string;
+    open: number;
+    overdue: number;
+    closed: number;
+    firstReplyMs: number | null;
+    firstReplySample: number;
+    resolutionMs: number | null;
+    rating: number | null;
+    ratingSample: number;
+  }[];
   aging: { label: string; count: number }[];
   trend: { day: string; received: number; closed: number }[];
   generatedAt: string;
@@ -201,6 +212,48 @@ export default function Management({
                 </small>
               </div>
             </div>
+            <section className="owners-card">
+              <h2>Desempenho por atendente</h2>
+              <p>
+                Fila de agora e, no período, conclusões e tempos médios. A 1ª resposta conta para quem respondeu
+                primeiro; a conclusão, para o responsável do chamado.
+              </p>
+              {report.owners.length ? (
+                <div className="data-table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Atendente</th>
+                        <th>Em aberto</th>
+                        <th>Atrasados</th>
+                        <th>Concluídos</th>
+                        <th>1ª resposta média</th>
+                        <th>Até concluir</th>
+                        <th>Satisfação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {report.owners.map((row) => (
+                        <tr key={row.id}>
+                          <td>{row.name}</td>
+                          <td>{row.open}</td>
+                          <td className={row.overdue ? "cell-alert" : ""}>{row.overdue}</td>
+                          <td>{row.closed}</td>
+                          <td>
+                            {row.firstReplySample ? duration(row.firstReplyMs) : "—"}
+                            {row.firstReplySample > 0 && <small> · {row.firstReplySample}</small>}
+                          </td>
+                          <td>{row.closed ? duration(row.resolutionMs) : "—"}</td>
+                          <td>{row.rating === null ? "—" : `${row.rating.toLocaleString("pt-BR")} ★ · ${row.ratingSample}`}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p>Nenhum chamado no período.</p>
+              )}
+            </section>
             <details className="management-details">
               <summary>Distribuição e evolução do atendimento</summary>
               <h3>Por serviço</h3>
@@ -226,31 +279,7 @@ export default function Management({
                   </tbody>
                 </table>
               </div>
-              <h3>Fila por responsável</h3>
-              {report.owners.length ? (
-                <div className="data-table-wrap">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Responsável</th>
-                        <th>Em aberto</th>
-                        <th>Atrasadas</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {report.owners.map((row) => (
-                        <tr key={row.id}>
-                          <td>{row.name}</td>
-                          <td>{row.open}</td>
-                          <td>{row.overdue}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p>Nenhuma solicitação em aberto.</p>
-              )}
+
               <h3>Idade da fila atual</h3>
               <div className="management-kpis">
                 {report.aging.map((row) => (

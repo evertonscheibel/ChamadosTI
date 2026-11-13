@@ -35,7 +35,7 @@ import SeniorSync from "./SeniorSync";
 import Management from "./Management";
 import { useTicketAlerts, AlertToasts, AlertSettings, WhatsappBanner, type WhatsappHealth } from "./TicketAlerts";
 import Deliveries from "./Deliveries";
-import RhQueue, { Channel, Deadline, displayName, type QueueTab } from "./RhQueue";
+import RhQueue, { Channel, Deadline, displayName, type QueueTab, type QueueRequest } from "./RhQueue";
 
 type User = {
   id: string;
@@ -65,6 +65,10 @@ type Request = {
   due_at?: string;
   closed_at?: string;
   sla?: { percent: number; level: "verde" | "amarelo" | "laranja" | "vermelho" } | null;
+  first_response?: QueueRequest["first_response"];
+  first_response_at?: string | null;
+  needs_reply?: boolean;
+  last_message_at?: string | null;
 };
 type Detail = {
   request: Request;
@@ -75,6 +79,9 @@ type Detail = {
     role: string;
     created_at: string;
     internal: number;
+    wa_status?: "pendente" | "enviado" | "falhou" | "nao_entregue" | null;
+    wa_attempts?: number;
+    wa_error?: string | null;
   }[];
   history: {
     id: number;
@@ -85,7 +92,7 @@ type Detail = {
     internal: number;
     data: { from?: string | null; to?: string | null; attachments?: number };
   }[];
-  attachments: { id: string; name: string; size: number; internal: number; message_id: string | null }[];
+  attachments: { id: string; name: string; type: string; size: number; internal: number; message_id: string | null }[];
   related?: {
     requests: { id: string; protocol: string; subject: string; status: string; created_at: string; rating: number | null }[];
     documents: { id: number; kind: string; month: string; status: string; created_at: string }[];
@@ -405,6 +412,39 @@ function NewRequest({
   );
 }
 
+/** Anexo dentro da conversa: foto e vídeo aparecem, áudio toca, o resto vira link. */
+function MediaFile({ file }: { file: { id: string; name: string; type: string; size: number } }) {
+  const src = `/api/attachments/${file.id}`;
+  if (/^image\/(jpeg|png|webp|gif)$/.test(file.type))
+    return (
+      <a className="media media-image" href={`${src}?inline=1`} target="_blank" rel="noreferrer" title="Abrir a imagem">
+        <img src={`${src}?inline=1`} alt={file.name} loading="lazy" />
+      </a>
+    );
+  if (/^audio\//.test(file.type))
+    return (
+      <span className="media media-audio">
+        <audio controls preload="metadata" src={`${src}?inline=1`} />
+        <a href={src} title="Baixar o áudio">
+          <Paperclip size={12} />
+        </a>
+      </span>
+    );
+  if (/^video\//.test(file.type))
+    return (
+      <span className="media media-video">
+        <video controls preload="metadata" src={`${src}?inline=1`} />
+      </span>
+    );
+  return (
+    <a className="media-file" href={file.type === "application/pdf" ? `${src}?inline=1` : src} target="_blank" rel="noreferrer">
+      <Paperclip size={13} />
+      {file.name}
+      <small>{Math.max(1, Math.ceil(file.size / 1024))} KB</small>
+    </a>
+  );
+}
+
 function RequestDetail({
   id,
   user,
@@ -512,6 +552,19 @@ function RequestDetail({
     setMessage((current) => (current.trim() ? `${current.trimEnd()}\n\n${body}` : body));
     setInternal(false);
     setShowTemplates(false);
+  }
+  async function resend(messageId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api<{ ok: boolean }>(`/requests/${id}/messages/${messageId}/resend`, "POST", {});
+      if (!r.ok) setWarning("O WhatsApp ainda não respondeu. A central continua tentando sozinha.");
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
   async function saveTemplate() {
     const title = window.prompt("Nome da resposta pronta (ex.: Atestado recebido):");
@@ -648,13 +701,22 @@ function RequestDetail({
       <div className="ticket-grid">
         <section className="ticket-thread" aria-label="Conversa">
           <div className="thread-messages" ref={thread}>
-          {(!repeated || fields.length > 0) && (
+          {(!repeated || fields.length > 0 || detail.attachments.some((f) => !f.message_id)) && (
           <article className="bubble bubble-them bubble-opening">
             <header>
               <strong>{repeated ? "Dados do chamado" : displayName(request)}</strong>
               <small>Abertura · {formatDate(request.created_at)}</small>
             </header>
             {!repeated && <p className="preserve-lines">{request.description}</p>}
+            {detail.attachments.some((f) => !f.message_id) && (
+              <div className="bubble-files">
+                {detail.attachments
+                  .filter((f) => !f.message_id)
+                  .map((f) => (
+                    <MediaFile key={f.id} file={f} />
+                  ))}
+              </div>
+            )}
             {fields.length > 0 && (
               <dl className="bubble-fields">
                 {fields.map(([key, value]) => (
@@ -681,15 +743,28 @@ function RequestDetail({
                 <small>{formatDate(m.created_at)}</small>
               </header>
               <p className="preserve-lines">{m.body}</p>
+              {rh && m.wa_status && (
+                <footer className={`delivery delivery-wa-${m.wa_status}`}>
+                  {m.wa_status === "enviado"
+                    ? "✓ Enviado ao WhatsApp"
+                    : m.wa_status === "pendente"
+                      ? "Enviando ao WhatsApp…"
+                      : m.wa_status === "falhou"
+                        ? `Não saiu no WhatsApp · tentando de novo sozinho (${m.wa_attempts} tentativa${m.wa_attempts === 1 ? "" : "s"})`
+                        : "Não entregue no WhatsApp"}
+                  {(m.wa_status === "falhou" || m.wa_status === "nao_entregue") && (
+                    <button type="button" disabled={busy} title={m.wa_error || ""} onClick={() => void resend(m.id)}>
+                      Tentar agora
+                    </button>
+                  )}
+                </footer>
+              )}
               {detail.attachments.some((f) => f.message_id === m.id) && (
                 <div className="bubble-files">
                   {detail.attachments
                     .filter((f) => f.message_id === m.id)
                     .map((f) => (
-                      <a key={f.id} href={`/api/attachments/${f.id}`} target="_blank" rel="noreferrer">
-                        <Paperclip size={13} />
-                        {f.name}
-                      </a>
+                      <MediaFile key={f.id} file={f} />
                     ))}
                 </div>
               )}
@@ -818,6 +893,13 @@ function RequestDetail({
                 <Deadline request={request} />
                 <p className="side-sub">{request.due_at ? `Vence ${formatDate(request.due_at)} · 48h úteis` : "Sem prazo definido"}</p>
               </>
+            )}
+            {rh && request.first_response && (
+              <p className={`side-sub first-response ${request.first_response.late ? "late" : ""}`}>
+                {request.first_response.level === "respondido"
+                  ? `1ª resposta em ${formatDate(request.first_response_at || "")}${request.first_response.late ? " · fora do prazo" : " · no prazo"}`
+                  : `1ª resposta até ${formatDate(request.first_response.due_at)}${request.first_response.late ? " · atrasada" : ""}`}
+              </p>
             )}
           </section>
           <section className="side-card">
@@ -1232,7 +1314,7 @@ export default function CentralApp() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("Todas");
   const [category, setCategory] = useState("Todos os serviços");
-  const [queue, setQueue] = useState<QueueTab>("abertos");
+  const [queue, setQueue] = useState<QueueTab>("responder");
   const [cpf, setCpf] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -1299,7 +1381,7 @@ export default function CentralApp() {
       setPassword("");
       setView(result.user.role === "rh" ? "requests" : "home");
       setActive(null);
-      setQueue("abertos");
+      setQueue("responder");
       setFilter("Todas");
       setCategory("Todos os serviços");
       setSearch("");

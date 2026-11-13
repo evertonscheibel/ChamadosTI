@@ -197,3 +197,25 @@ test("confirmação do chamado mostra o prazo e avisa fora do expediente", () =>
   assert.doesNotMatch(inside, /fora do horário/);
   assert.match(ticketOpenedText("FRZ-3", 4, { dueMs, offHours: true }), /fora do horário de atendimento \(segunda a sexta, das 7h às 17h\)/);
 });
+
+test("1ª resposta: relógio só corre no expediente (7h–17h, dias úteis)", async () => {
+  const { officeDeadline, officeElapsed, firstResponseStatus } = await import("./whatsapp-rh.mjs");
+  const office = { officeHours: [7 * 60, 17 * 60], holidays: ["2026-11-20"] };
+  const iso = (t) => new Date(t).toISOString();
+  // segunda 10h + 4h = 14h
+  assert.equal(iso(officeDeadline(ms("2026-11-16T10:00:00-04:00"), 4, office)), "2026-11-16T18:00:00.000Z");
+  // segunda 15h + 4h = 2h na segunda + 2h na terça -> terça 9h
+  assert.equal(iso(officeDeadline(ms("2026-11-16T15:00:00-04:00"), 4, office)), "2026-11-17T13:00:00.000Z");
+  // segunda 22h (fora do expediente) -> terça 11h
+  assert.equal(iso(officeDeadline(ms("2026-11-16T22:00:00-04:00"), 4, office)), "2026-11-17T15:00:00.000Z");
+  // quinta 16h, sexta é feriado -> segunda 10h
+  assert.equal(iso(officeDeadline(ms("2026-11-19T16:00:00-04:00"), 4, office)), "2026-11-23T14:00:00.000Z");
+  assert.equal(officeElapsed(ms("2026-11-16T16:00:00-04:00"), ms("2026-11-17T08:00:00-04:00"), office), 2 * 3600000);
+  const created = "2026-11-16T10:00:00-04:00";
+  const at = (now, answered = null) => firstResponseStatus(created, answered, ms(now), { hours: 4, ...office });
+  assert.equal(at("2026-11-16T11:00:00-04:00").level, "ok");
+  assert.equal(at("2026-11-16T13:30:00-04:00").level, "perto");
+  assert.equal(at("2026-11-16T14:00:00-04:00").level, "atrasado");
+  assert.deepEqual(at("2026-11-16T15:00:00-04:00", "2026-11-16T13:00:00-04:00"), { due_at: "2026-11-16T18:00:00.000Z", level: "respondido", late: false });
+  assert.equal(at("2026-11-16T15:00:00-04:00", "2026-11-16T14:30:00-04:00").late, true);
+});

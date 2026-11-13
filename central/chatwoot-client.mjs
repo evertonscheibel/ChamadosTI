@@ -25,7 +25,32 @@ export function configuration() {
     accountId: settings.CHATWOOT_ACCOUNT_ID,
     botToken: settings.CHATWOOT_BOT_TOKEN,
     secret: settings.CHATWOOT_BOT_SECRET,
+    // Token de um usuário do Chatwoot (Perfil > Token de acesso). O token do bot
+    // não pode ler conversas; este é usado só para recuperar mensagens perdidas.
+    apiToken: settings.CHATWOOT_API_TOKEN,
   };
+}
+
+/** Leitura com o token de usuário (recuperação de mensagens). */
+async function readApi(path) {
+  const config = configuration();
+  if (!config.enabled || !config.apiToken) throw error("Leitura do Chatwoot não configurada (CHATWOOT_API_TOKEN).", 503);
+  const response = await fetch(`${config.base.replace(/\/+$/, "")}/api/v1/accounts/${config.accountId}${path}`, {
+    headers: { api_access_token: config.apiToken, Accept: "application/json" },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) throw error(`Chatwoot recusou a leitura (${response.status}).`, 502);
+  return response.json();
+}
+/** Conversas da caixa, da atividade mais recente para a mais antiga. */
+export async function listInboxConversations(inboxId, page = 1) {
+  const result = await readApi(`/conversations?inbox_id=${Number(inboxId)}&status=all&sort_by=last_activity_at_desc&page=${Number(page)}`);
+  return result.data?.payload || [];
+}
+/** Últimas mensagens de uma conversa (o Chatwoot devolve as mais recentes). */
+export async function listConversationMessages(conversationId) {
+  const result = await readApi(`/conversations/${Number(conversationId)}/messages`);
+  return result.payload || [];
 }
 
 /**

@@ -50,11 +50,12 @@ const clean = (value) => String(value ?? "").replace(/[\r\n]+/g, " ").trim();
 
 /**
  * request: { protocol, subject, requester_name, channel, due_at }
- * kind: "novo" | "laranja" | "vermelho"
+ * kind: "novo" | "primeira" | "laranja" | "vermelho"
  */
 export function alertMessage(request, kind, centralUrl) {
   const heading = {
     novo: "Novo chamado na central",
+    primeira: "1ª resposta atrasada",
     laranja: "Prazo perto do fim",
     vermelho: "Prazo estourado",
   }[kind];
@@ -75,7 +76,7 @@ export function alertMessage(request, kind, centralUrl) {
     "",
     "Aviso automático da Central de Relacionamentos Frizelo. O conteúdo do chamado fica só na central.",
   ].join("\n");
-  const color = { novo: "#841c11", laranja: "#c96a12", vermelho: "#b3261e" }[kind];
+  const color = { novo: "#841c11", primeira: "#b3261e", laranja: "#c96a12", vermelho: "#b3261e" }[kind];
   const html = `<div style="font-family:Arial,sans-serif;max-width:520px;color:#2b211e">
   <div style="border-left:4px solid ${color};padding:4px 0 4px 14px;margin-bottom:16px">
     <div style="font-size:12px;color:#7a6a64;text-transform:uppercase;letter-spacing:.5px">Central de Relacionamentos Frizelo</div>

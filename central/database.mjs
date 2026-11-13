@@ -61,6 +61,16 @@ column("attachments", "message_id", "TEXT");
 column("requests", "alert_level", "INTEGER");
 column("requests", "awaiting_since", "TEXT");
 column("requests", "reminder_sent_at", "TEXT");
+column("requests", "first_response_alerted", "INTEGER NOT NULL DEFAULT 0");
+// Mensagens do WhatsApp já processadas (id no Chatwoot): evita processar duas vezes
+// e permite recuperar as que chegaram com a central fora do ar.
+db.exec("CREATE TABLE IF NOT EXISTS whatsapp_seen (message_id INTEGER PRIMARY KEY, conversation_id TEXT, seen_at TEXT NOT NULL)");
+db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+// Entrega das respostas do RH no WhatsApp: pendente | enviado | falhou | nao_entregue.
+column("messages", "wa_status", "TEXT");
+column("messages", "wa_attempts", "INTEGER NOT NULL DEFAULT 0");
+column("messages", "wa_error", "TEXT");
+column("messages", "wa_next_at", "TEXT");
 // Respostas prontas do RH. {nome} e {protocolo} são trocados na hora de usar.
 db.exec(
   "CREATE TABLE IF NOT EXISTS reply_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, body TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL)",

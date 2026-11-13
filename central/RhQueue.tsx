@@ -3,7 +3,7 @@ import { RefreshCw, Search, ChevronRight, MessageCircle, Globe, Inbox, Headphone
 import { services, statuses } from "./catalog.mjs";
 import { api } from "./api";
 
-export type QueueTab = "abertos" | "meus" | "sem" | "atrasados" | "concluidos";
+export type QueueTab = "responder" | "abertos" | "meus" | "sem" | "atrasados" | "concluidos";
 export type QueueRequest = {
   id: string;
   protocol: string;
@@ -19,11 +19,38 @@ export type QueueRequest = {
   due_at?: string;
   closed_at?: string;
   sla?: { percent: number; level: "verde" | "amarelo" | "laranja" | "vermelho" } | null;
+  first_response?: { due_at: string; level: "respondido" | "ok" | "perto" | "atrasado"; late: boolean; left_ms?: number } | null;
+  first_response_at?: string | null;
+  needs_reply?: boolean;
+  last_message_at?: string | null;
 };
+/** Ainda sem nenhuma resposta pública do RH. */
+export const unanswered = (r: QueueRequest) => !!r.first_response && r.first_response.level !== "respondido";
+/** Colaborador escreveu de novo depois de o RH já ter respondido. */
+export const newMessage = (r: QueueRequest) => !!r.needs_reply && !unanswered(r);
+const shortSpan = (ms: number) => {
+  const minutes = Math.max(1, Math.round(ms / 60000));
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60 ? String(minutes % 60).padStart(2, "0") : ""}` : `${minutes} min`;
+};
+/** Selo da vez do RH: 1ª resposta (com prazo) ou nova mensagem do colaborador. */
+export function ReplyFlag({ request }: { request: QueueRequest }) {
+  if (request.status === "Concluída") return null;
+  const fr = request.first_response;
+  if (fr && fr.level !== "respondido")
+    return (
+      <span className={`reply-flag reply-${fr.level}`} title={`Prazo da 1ª resposta: ${shortDate(fr.due_at)} (horas de expediente)`}>
+        {fr.level === "atrasado" ? "1ª resposta atrasada" : `1ª resposta em ${shortSpan(fr.left_ms || 0)}`}
+      </span>
+    );
+  if (newMessage(request)) return <span className="reply-flag reply-new">Nova mensagem</span>;
+  return null;
+}
 
 const open = (r: QueueRequest) => r.status !== "Concluída";
 export const isOverdue = (r: QueueRequest) => open(r) && !!r.due_at && Date.parse(r.due_at) < Date.now();
-const time = (iso?: string) => (iso ? Date.parse(iso) : Infinity);
+const time = (iso?: string | null) => (iso ? Date.parse(iso) : Infinity);
+const urgency = (r: QueueRequest) =>
+  Math.min(time(r.due_at), r.first_response && r.first_response.level !== "respondido" ? time(r.first_response.due_at) : Infinity);
 const shortDate = (iso: string) =>
   new Date(iso).toLocaleString("pt-BR", {
     timeZone: "America/Cuiaba",
@@ -133,6 +160,7 @@ export default function RhQueue({
     onRefresh();
   }
   const tabs: [QueueTab, string, (r: QueueRequest) => boolean][] = [
+    ["responder", "Para responder", (r) => open(r) && !!r.needs_reply],
     ["abertos", "Abertos", open],
     ["meus", "Minha fila", (r) => open(r) && r.assigned_to === userId],
     ["sem", "Sem responsável", (r) => open(r) && !r.assigned_to],
@@ -146,7 +174,10 @@ export default function RhQueue({
     .filter((r) => !theme || r.service_id === theme)
     .filter((r) => !term || `${r.protocol} ${r.subject} ${r.requester_name} ${r.department}`.toLowerCase().includes(term))
     .sort((a, b) =>
-      tab === "concluidos" ? time(b.closed_at) - time(a.closed_at) : time(a.due_at) - time(b.due_at),
+      tab === "concluidos"
+        ? time(b.closed_at) - time(a.closed_at)
+        : // A vez do RH primeiro; depois o prazo mais próximo (1ª resposta ou conclusão).
+          Number(!!b.needs_reply) - Number(!!a.needs_reply) || urgency(a) - urgency(b),
     );
   const themes = services.filter((s) => requests.some((r) => r.service_id === s.id));
   const selectable = tab !== "concluidos";
@@ -183,7 +214,7 @@ export default function RhQueue({
               key={key}
               role="tab"
               aria-selected={tab === key}
-              className={`${tab === key ? "selected" : ""} ${key === "atrasados" && count ? "alert" : ""}`}
+              className={`${tab === key ? "selected" : ""} ${(key === "atrasados" || key === "responder") && count ? "alert" : ""}`}
               onClick={() => setTab(key)}
             >
               {label}
@@ -278,7 +309,13 @@ export default function RhQueue({
         {rows.length === 0 ? (
           <div className="queue-empty">
             <Inbox size={30} />
-            <strong>{requests.length ? "Nenhum chamado aqui" : "Nenhum chamado recebido ainda"}</strong>
+            <strong>
+              {tab === "responder" && !term && !theme
+                ? "Tudo respondido"
+                : requests.length
+                  ? "Nenhum chamado aqui"
+                  : "Nenhum chamado recebido ainda"}
+            </strong>
             <span>{term || theme ? "Ajuste a busca ou o tema." : "Quando chegar um chamado, ele aparece nesta lista."}</span>
           </div>
         ) : (
@@ -313,6 +350,7 @@ export default function RhQueue({
               </span>
               <span className="q-status">
                 <span className={`pill pill-${r.status.normalize("NFD").replace(/[^a-zA-Z]/g, "").toLowerCase()}`}>{r.status}</span>
+                <ReplyFlag request={r} />
               </span>
               <span className={`q-owner ${r.assigned_name ? "queue-owner" : "queue-owner none"}`}>
                 {r.assigned_name ? (

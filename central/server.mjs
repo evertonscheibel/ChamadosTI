@@ -57,7 +57,10 @@ import {
   resolveConversation,
   sendMessageWithFiles,
   downloadAttachment,
+  listInboxConversations,
+  listConversationMessages,
 } from "./chatwoot-client.mjs";
+import { recoverMissed } from "./whatsapp-recovery.mjs";
 import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
 import { startWahaWatchdog } from "./waha-watchdog.mjs";
 import { createEmailAlerts } from "./email-alerts.mjs";
@@ -84,6 +87,7 @@ import {
   businessElapsed,
   awaitingEmployeeText,
   awaitingReminderText,
+  firstResponseStatus,
 } from "./whatsapp-rh.mjs";
 import { holeritePdf, espelhoPdf } from "./senior-documents.mjs";
 import { situationNames } from "./senior.mjs";
@@ -499,16 +503,29 @@ function history(id, user, event, kind = "legacy", data = {}, internal = 0) {
 function list(user) {
   const clause = user.role === "rh" ? "" : "WHERE r.user_id=?";
   const statement = db.prepare(
-    `SELECT r.*, u.name requester_name, u.unit, u.department, a.name assigned_name FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN users a ON a.id=r.assigned_to ${clause} ORDER BY r.created_at DESC`,
+    `SELECT r.*, u.name requester_name, u.unit, u.department, a.name assigned_name,
+       (SELECT MIN(m.created_at) FROM messages m JOIN users mu ON mu.id=m.user_id WHERE m.request_id=r.id AND m.internal=0 AND mu.role='rh') first_response_at,
+       (SELECT mu.role FROM messages m JOIN users mu ON mu.id=m.user_id WHERE m.request_id=r.id AND m.internal=0 ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) last_role,
+       (SELECT MAX(m.created_at) FROM messages m WHERE m.request_id=r.id AND m.internal=0) last_message_at
+     FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN users a ON a.id=r.assigned_to ${clause} ORDER BY r.created_at DESC`,
   );
-  const { holidays } = whatsappConfig();
+  const { holidays, officeHours, firstResponseHours } = whatsappConfig();
   const now = Date.now();
   return (user.role === "rh" ? statement.all() : statement.all(user.id)).map(
-    (r) => ({
+    ({ last_role, ...r }) => ({
       ...r,
       fields: JSON.parse(r.fields),
       // Criticidade pelo prazo útil consumido (verde/amarelo/laranja/vermelho).
       sla: r.status !== "Concluída" && r.due_at ? slaStatus(r.created_at, r.due_at, now, holidays) : null,
+      // Primeira resposta do RH (prazo curto, só no expediente).
+      first_response:
+        user.role === "rh"
+          ? r.status === "Concluída" && !r.first_response_at
+            ? null
+            : firstResponseStatus(r.created_at, r.first_response_at, now, { hours: firstResponseHours, officeHours, holidays })
+          : undefined,
+      // A vez é do RH: chamado aberto cuja última mensagem pública veio do colaborador.
+      needs_reply: r.status !== "Concluída" && r.status !== "Aguardando colaborador" && last_role !== "rh",
     }),
   );
 }
@@ -650,7 +667,38 @@ function colaboradorFromCandidate(candidate) {
 // =============================================================================
 // WhatsApp do RH: atendente virtual -> chamado na central (ver whatsapp-rh.mjs)
 // =============================================================================
-const ACCEPTED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
+// Formatos que o colaborador pode mandar pelo WhatsApp e ficam guardados no chamado.
+const WHATSAPP_TYPES = {
+  "application/pdf": "pdf",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "audio/ogg": "ogg",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/aac": "aac",
+  "audio/amr": "amr",
+  "video/mp4": "mp4",
+  "video/3gpp": "3gp",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "text/plain": "txt",
+};
+const EXTENSION_TYPES = Object.fromEntries(Object.entries(WHATSAPP_TYPES).map(([type, ext]) => [ext, type]));
+Object.assign(EXTENSION_TYPES, { jpeg: "image/jpeg", oga: "audio/ogg", opus: "audio/ogg", m4v: "video/mp4" });
+const INLINE_TYPES = /^(image\/(jpeg|png|webp|gif)|audio\/(ogg|mpeg|mp4|aac)|video\/(mp4|3gpp)|application\/pdf)$/;
+const WHATSAPP_MAX_BYTES = 16 * 1024 * 1024;
+/** Tipo do arquivo: o que o Chatwoot informa ou, se vier genérico, pela extensão. */
+function whatsappType(file, attachment) {
+  if (WHATSAPP_TYPES[file.type]) return file.type;
+  const ext = /\.([a-z0-9]{2,5})(?:\?|$)/i.exec(String(attachment.data_url || ""))?.[1]?.toLowerCase();
+  if (ext && EXTENSION_TYPES[ext]) return EXTENSION_TYPES[ext];
+  if (attachment.file_type === "audio") return "audio/ogg";
+  return null;
+}
 const formatPhone = (digits) =>
   digits.length >= 12
     ? `(${digits.slice(2, 4)}) ${digits.slice(4, -4)}-${digits.slice(-4)}`
@@ -669,18 +717,37 @@ function whatsappOwner(phone, contactName) {
   ).run(user.id, identifier, name, "colaborador", "WhatsApp", "Não informado", "!whatsapp");
   return user;
 }
-/** Baixa os anexos da mensagem; o que não for PDF/JPG/PNG vira um aviso no texto. */
+/**
+ * Baixa os anexos da mensagem (foto, áudio, vídeo, PDF, Word, Excel…) e guarda no chamado.
+ * Localização e contato viram texto; o que não der para guardar vira um aviso.
+ */
 async function whatsappFiles(attachments) {
   const files = [];
   const notes = [];
-  for (const [i, a] of attachments.slice(0, 3).entries()) {
+  const label = { audio: "áudio", video: "vídeo", image: "imagem", file: "arquivo" };
+  for (const [i, a] of attachments.slice(0, 5).entries()) {
+    if (a.file_type === "location") {
+      const lat = a.coordinates_lat ?? a.latitude;
+      const lng = a.coordinates_long ?? a.longitude;
+      notes.push(lat && lng ? `📍 Localização enviada: https://maps.google.com/?q=${Number(lat)},${Number(lng)}` : "📍 Localização enviada");
+      continue;
+    }
+    if (a.file_type === "contact") {
+      notes.push(`👤 Contato enviado: ${String(a.fallback_title || a.name || "").slice(0, 120)}`.trim());
+      continue;
+    }
     try {
-      const file = await downloadAttachment(a.data_url);
-      if (!ACCEPTED_TYPES.includes(file.type)) throw new Error("tipo");
-      const ext = { "application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png" }[file.type];
-      files.push({ name: `whatsapp-${Date.now()}-${i + 1}.${ext}`, type: file.type, content: file.content });
-    } catch {
-      notes.push(`(${a.file_type === "audio" ? "áudio" : "arquivo"} recebido no WhatsApp — veja a conversa no Chatwoot)`);
+      const file = await downloadAttachment(a.data_url, WHATSAPP_MAX_BYTES);
+      const type = whatsappType(file, a);
+      if (!type) throw new Error("tipo");
+      const kind = type.startsWith("audio/") ? "audio" : type.startsWith("video/") ? "video" : type.startsWith("image/") ? "imagem" : "arquivo";
+      files.push({ name: `whatsapp-${kind}-${Date.now()}-${i + 1}.${WHATSAPP_TYPES[type]}`, type, content: file.content });
+    } catch (e) {
+      notes.push(
+        e.status === 413
+          ? `(${label[a.file_type] || "arquivo"} acima de 16 MB recebido no WhatsApp — veja a conversa no Chatwoot)`
+          : `(${label[a.file_type] || "arquivo"} recebido no WhatsApp em formato não suportado — veja a conversa no Chatwoot)`,
+      );
     }
   }
   return { files, notes };
@@ -892,6 +959,124 @@ async function processWhatsappRh(payload, config) {
   saveWhatsappState(conversationId, step.state, phone, null);
   if (step.reply) await sendChatwootMessage(conversationId, step.reply);
 }
+// --- Mensagens do WhatsApp: fila por conversa, deduplicação e recuperação --------
+function markWhatsappSeen(payload) {
+  if (!Number.isInteger(Number(payload.id)) || !payload.id) return true;
+  return (
+    db
+      .prepare("INSERT OR IGNORE INTO whatsapp_seen (message_id,conversation_id,seen_at) VALUES (?,?,?)")
+      .run(Number(payload.id), String(payload.conversation?.id ?? ""), new Date().toISOString()).changes > 0
+  );
+}
+/** Processa em ordem as mensagens de cada conversa (uma de cada vez). */
+function enqueueWhatsapp(payload, config) {
+  const conversationId = payload.conversation.id;
+  const previous = chatwootQueues.get(conversationId) || Promise.resolve();
+  const next = previous
+    .then(() => processWhatsappRh(payload, config))
+    .catch((e) => console.error(`WhatsApp RH conversa ${conversationId}:`, e.message))
+    .finally(() => {
+      if (chatwootQueues.get(conversationId) === next) chatwootQueues.delete(conversationId);
+    });
+  chatwootQueues.set(conversationId, next);
+  return next;
+}
+const recoveryState = { enabled: false, lastRun: null, lastRecovered: 0, lastError: null };
+/** Busca no Chatwoot o que chegou enquanto a central estava fora (no início e a cada 5 min). */
+async function recoverWhatsapp() {
+  const chatwoot = chatwootConfiguration();
+  recoveryState.enabled = Boolean(chatwoot.enabled && chatwoot.apiToken);
+  if (!recoveryState.enabled) return 0;
+  const config = whatsappConfig();
+  let start = db.prepare("SELECT value FROM settings WHERE key='whatsapp_recovery_since'").get()?.value;
+  if (!start) {
+    // Primeira vez: começa a partir de agora (o histórico antigo nunca é reprocessado).
+    start = String(Math.floor(Date.now() / 1000));
+    db.prepare("INSERT INTO settings (key,value) VALUES ('whatsapp_recovery_since',?)").run(start);
+  }
+  const since = Math.max(Number(start), Math.floor(Date.now() / 1000) - 3 * 86400);
+  try {
+    const recovered = await recoverMissed({
+      inboxId: config.inboxId,
+      since,
+      seen: (id) => Boolean(db.prepare("SELECT 1 FROM whatsapp_seen WHERE message_id=?").get(Number(id))),
+      listConversations: (page) => listInboxConversations(config.inboxId, page),
+      listMessages: (id) => listConversationMessages(id),
+      log: console.log,
+      process: async (payload) => {
+        const phone = payload.sender?.phone_number || payload.conversation?.meta?.sender?.phone_number;
+        if (!phoneAllowed(phone, config)) return;
+        if (!markWhatsappSeen(payload)) return;
+        await enqueueWhatsapp(payload, config);
+      },
+    });
+    Object.assign(recoveryState, { lastRun: new Date().toISOString(), lastRecovered: recovered, lastError: null });
+    return recovered;
+  } catch (e) {
+    Object.assign(recoveryState, { lastRun: new Date().toISOString(), lastError: e.message });
+    console.error("[recuperação] WhatsApp:", e.message);
+    return 0;
+  }
+}
+
+// --- Entrega das respostas do RH no WhatsApp ----------------------------------
+// Tenta na hora; se falhar, tenta de novo sozinho (1, 2, 5, 10, 20, 30, 60 min).
+// Depois de 8 tentativas fica "não entregue" e o RH pode mandar de novo no chamado.
+const RETRY_MINUTES = [1, 2, 5, 10, 20, 30, 60];
+const MAX_ATTEMPTS = RETRY_MINUTES.length + 1;
+const delivering = new Set();
+async function deliverToWhatsapp(messageId) {
+  if (delivering.has(messageId)) return false;
+  delivering.add(messageId);
+  try {
+    const m = db
+      .prepare(
+        "SELECT m.id,m.body,m.request_id,m.wa_attempts,u.name author,r.chatwoot_conversation_id FROM messages m JOIN users u ON u.id=m.user_id JOIN requests r ON r.id=m.request_id WHERE m.id=?",
+      )
+      .get(messageId);
+    if (!m?.chatwoot_conversation_id) return false;
+    const files = db.prepare("SELECT name,type,content FROM attachments WHERE message_id=? ORDER BY created_at").all(messageId);
+    const attempts = m.wa_attempts + 1;
+    try {
+      await sendMessageWithFiles(m.chatwoot_conversation_id, `${m.body}\n— ${m.author}, RH Frizelo`, files);
+      db.prepare("UPDATE messages SET wa_status='enviado',wa_attempts=?,wa_error=NULL,wa_next_at=NULL WHERE id=?").run(attempts, messageId);
+      return true;
+    } catch (e) {
+      const final = attempts >= MAX_ATTEMPTS;
+      const next = final ? null : new Date(Date.now() + RETRY_MINUTES[attempts - 1] * 60000).toISOString();
+      db.prepare("UPDATE messages SET wa_status=?,wa_attempts=?,wa_error=?,wa_next_at=? WHERE id=?").run(
+        final ? "nao_entregue" : "falhou",
+        attempts,
+        String(e.message).slice(0, 300),
+        next,
+        messageId,
+      );
+      if (attempts === 1 || final) {
+        const author = db.prepare("SELECT u.id,u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?").get(messageId);
+        transaction(() =>
+          history(
+            m.request_id,
+            author,
+            final ? "Resposta NÃO entregue no WhatsApp depois de várias tentativas" : "Falha ao enviar a resposta pelo WhatsApp (nova tentativa automática)",
+            "whatsapp_error",
+            { erro: e.message, tentativas: attempts },
+            1,
+          ),
+        );
+      }
+      return false;
+    }
+  } finally {
+    delivering.delete(messageId);
+  }
+}
+async function retryWhatsappDeliveries() {
+  const due = db
+    .prepare("SELECT id FROM messages WHERE wa_status IN ('pendente','falhou') AND (wa_next_at IS NULL OR wa_next_at<=?) ORDER BY created_at LIMIT 20")
+    .all(new Date().toISOString());
+  for (const { id } of due) await deliverToWhatsapp(id);
+}
+
 // --- Avisos automáticos -------------------------------------------------------
 const LEVEL_RANK = { verde: 0, amarelo: 1, laranja: 2, vermelho: 3 };
 /** Dados mínimos do chamado para o e-mail (sem o texto do chamado). */
@@ -924,11 +1109,24 @@ const whatsappConversation = (request) =>
  * lembrete no WhatsApp para quem não respondeu o RH em 2 dias úteis.
  */
 async function automaticAlerts(now = Date.now()) {
-  const { holidays, officeHours } = whatsappConfig();
+  const { holidays, officeHours, firstResponseHours } = whatsappConfig();
   const open = db
-    .prepare("SELECT id,protocol,created_at,due_at,alert_level,status,awaiting_since,reminder_sent_at,chatwoot_conversation_id FROM requests WHERE status<>'Concluída'")
+    .prepare(
+      `SELECT r.id,r.protocol,r.created_at,r.due_at,r.alert_level,r.status,r.awaiting_since,r.reminder_sent_at,r.chatwoot_conversation_id,r.first_response_alerted,
+         (SELECT MIN(m.created_at) FROM messages m JOIN users mu ON mu.id=m.user_id WHERE m.request_id=r.id AND m.internal=0 AND mu.role='rh') first_response_at
+       FROM requests r WHERE r.status<>'Concluída'`,
+    )
     .all();
   for (const request of open) {
+    // 1ª resposta estourou o prazo sem nenhuma resposta do RH: e-mail uma vez.
+    if (!request.first_response_alerted && !request.first_response_at) {
+      const first = firstResponseStatus(request.created_at, null, now, { hours: firstResponseHours, officeHours, holidays });
+      if (first?.level === "atrasado") {
+        db.prepare("UPDATE requests SET first_response_alerted=1 WHERE id=?").run(request.id);
+        const data = alertRequest(request.id);
+        if (data) void emailAlerts.notify(data, "primeira");
+      }
+    }
     const sla = request.due_at ? slaStatus(request.created_at, request.due_at, now, holidays) : null;
     const rank = sla ? LEVEL_RANK[sla.level] : -1;
     if (request.alert_level === null) {
@@ -1316,14 +1514,9 @@ http
             return json(res, 200, { ok: true, skipped: true });
           }
           if (!chatAllowed(`wa-${conversationId}`)) return json(res, 200, { ok: true, skipped: true });
-          const previous = chatwootQueues.get(conversationId) || Promise.resolve();
-          const next = previous
-            .then(() => processWhatsappRh(payload, whatsapp))
-            .catch((e) => console.error(`WhatsApp RH conversa ${conversationId}:`, e.message))
-            .finally(() => {
-              if (chatwootQueues.get(conversationId) === next) chatwootQueues.delete(conversationId);
-            });
-          chatwootQueues.set(conversationId, next);
+          // Mesma mensagem duas vezes (reenvio do Chatwoot ou recuperação): só a primeira conta.
+          if (!markWhatsappSeen(payload)) return json(res, 200, { ok: true, duplicate: true });
+          enqueueWhatsapp(payload, whatsapp);
           return json(res, 200, { ok: true, accepted: true });
         }
         // O Chatwoot manda ao bot toda mensagem da caixa, inclusive depois que
@@ -1703,7 +1896,7 @@ http
           return json(res, 200, { user: publicUser(user) });
         if (pathname === "/api/whatsapp/status" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
-          return json(res, 200, wahaWatchdog.getHealth());
+          return json(res, 200, { ...wahaWatchdog.getHealth(), recovery: recoveryState });
         }
         if (pathname === "/api/whatsapp/documents" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
@@ -1829,6 +2022,16 @@ http
             request: list(user).find((r) => r.id === id),
           });
         }
+        const resend = pathname.match(/^\/api\/requests\/([a-f0-9-]+)\/messages\/([a-f0-9-]+)\/resend$/);
+        if (resend && req.method === "POST") {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          const row = db.prepare("SELECT id,wa_status FROM messages WHERE id=? AND request_id=?").get(resend[2], resend[1]);
+          if (!row || !row.wa_status) fail(404, "Mensagem não encontrada.");
+          if (row.wa_status === "enviado") return json(res, 200, { ok: true, status: "enviado" });
+          db.prepare("UPDATE messages SET wa_attempts=0 WHERE id=?").run(row.id);
+          const ok = await deliverToWhatsapp(row.id);
+          return json(res, 200, { ok, status: ok ? "enviado" : "falhou" });
+        }
         const match = pathname.match(
           /^\/api\/requests\/([a-f0-9-]+)(?:\/(messages))?$/,
         );
@@ -1888,10 +2091,12 @@ http
             if (input.internal && user.role !== "rh")
               fail(403, "Notas internas são exclusivas do RH.");
             const internal = input.internal ? 1 : 0;
+            const messageId = randomUUID();
+            // Resposta pública do RH num chamado do WhatsApp: sai também no WhatsApp do colaborador.
+            const toWhatsapp = user.role === "rh" && !internal && Boolean(whatsappConversation(request));
             transaction(() => {
-              const messageId = randomUUID();
               db.prepare(
-                "INSERT INTO messages (id,request_id,user_id,body,created_at,internal) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO messages (id,request_id,user_id,body,created_at,internal,wa_status) VALUES (?,?,?,?,?,?,?)",
               ).run(
                 messageId,
                 id,
@@ -1899,6 +2104,7 @@ http
                 message,
                 new Date().toISOString(),
                 internal,
+                toWhatsapp ? "pendente" : null,
               );
               saveFiles(attachments, id, user, internal, messageId);
               history(
@@ -1934,30 +2140,11 @@ http
                 id,
               );
             });
-            // Chamado vindo do WhatsApp: a resposta pública do RH sai no WhatsApp do colaborador.
-            if (
-              user.role === "rh" &&
-              !internal &&
-              request.chatwoot_conversation_id &&
-              db.prepare("SELECT 1 FROM whatsapp_rh WHERE conversation_id=?").get(String(request.chatwoot_conversation_id))
-            ) {
-              try {
-                await sendMessageWithFiles(
-                  request.chatwoot_conversation_id,
-                  `${message}
-— ${user.name}, RH Frizelo`,
-                  attachments,
-                );
-              } catch (e) {
-                transaction(() =>
-                  history(id, user, "Falha ao enviar a resposta pelo WhatsApp", "whatsapp_error", { erro: e.message }, 1),
-                );
-                return json(res, 201, {
-                  ok: true,
-                  warning: "Resposta salva, mas não foi possível enviá-la pelo WhatsApp agora. Tente novamente.",
-                });
-              }
-            }
+            if (toWhatsapp && !(await deliverToWhatsapp(messageId)))
+              return json(res, 201, {
+                ok: true,
+                warning: "Resposta salva, mas o WhatsApp não respondeu agora. A central vai tentar enviar de novo sozinha.",
+              });
             return json(res, 201, { ok: true });
           }
           if (!match[2] && req.method === "PATCH") {
@@ -2148,12 +2335,31 @@ http
           if (!file || (file.internal && user.role !== "rh"))
             fail(404, "Arquivo não encontrado.");
           owned(file.request_id, user);
-          res.writeHead(200, {
+          // ?inline=1: imagem, áudio, vídeo e PDF abrem na própria central (o resto sempre baixa).
+          const inline = url.searchParams.get("inline") === "1" && INLINE_TYPES.test(file.type);
+          const content = Buffer.from(file.content);
+          const headers = {
             "Content-Type": file.type,
-            "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+            "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.name)}`,
             "Cache-Control": "no-store",
-          });
-          return res.end(Buffer.from(file.content));
+            "X-Content-Type-Options": "nosniff",
+            "Accept-Ranges": "bytes",
+          };
+          // Áudio e vídeo pedem pedaços (Range) para tocar e avançar.
+          const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ""));
+          if (range && (range[1] || range[2])) {
+            const size = content.length;
+            let start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+            let end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+            if (start >= size || start > end) {
+              res.writeHead(416, { "Content-Range": `bytes */${size}` });
+              return res.end();
+            }
+            res.writeHead(206, { ...headers, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": end - start + 1 });
+            return res.end(content.subarray(start, end + 1));
+          }
+          res.writeHead(200, { ...headers, "Content-Length": content.length });
+          return res.end(content);
         }
         fail(404, "Recurso não encontrado.");
       }
@@ -2192,6 +2398,11 @@ if (process.env.CENTRAL_AVISOS !== "off") {
   const alertTimer = setInterval(() => void automaticAlerts().catch((e) => console.error("Avisos automáticos:", e.message)), 5 * 60000);
   alertTimer.unref?.();
   setTimeout(() => void automaticAlerts().catch((e) => console.error("Avisos automáticos:", e.message)), 20000).unref?.();
+  // Respostas do RH que não saíram no WhatsApp: tenta de novo a cada minuto.
+  setInterval(() => void retryWhatsappDeliveries().catch((e) => console.error("Reenvio WhatsApp:", e.message)), 60000).unref?.();
+  // Recupera mensagens do WhatsApp perdidas enquanto a central esteve fora.
+  setTimeout(() => void recoverWhatsapp(), 8000).unref?.();
+  setInterval(() => void recoverWhatsapp(), 5 * 60000).unref?.();
 }
 console.log(
   wahaWatchdog.getHealth().enabled

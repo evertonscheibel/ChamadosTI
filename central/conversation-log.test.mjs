@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
-import {
-  logConversationMessage,
-  listConversations,
-  conversationMessages,
-} from "./conversation-log.mjs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Banco temporário: o teste nunca toca o banco real da central (data/central.sqlite).
+process.env.CENTRAL_DATA_DIR = mkdtempSync(join(tmpdir(), "central-conversas-"));
+const { logConversationMessage, listConversations, conversationMessages } = await import("./conversation-log.mjs");
 
 test("logConversationMessage cria a conversa na primeira mensagem e acumula as seguintes", () => {
   const sessionId = randomUUID();
