@@ -164,3 +164,23 @@ export async function rescueStuck(
   }
   return rescued;
 }
+
+/**
+ * Resumo para o painel do RH: quantas mensagens desde `sinceIso` foram passadas a uma
+ * atendente por erro, e quantas ainda esperam (nem a passagem funcionou).
+ */
+export function deliveryStats(db, sinceIso) {
+  const counts = Object.fromEntries(
+    db
+      .prepare(
+        "SELECT status, COUNT(*) n FROM whatsapp_seen WHERE seen_at>=? AND status IN (?,?) GROUP BY status",
+      )
+      .all(sinceIso, STATUS.ATENDENTE, STATUS.FALHOU)
+      .map((r) => [r.status, Number(r.n)]),
+  );
+  return {
+    since: sinceIso,
+    escalated: counts[STATUS.ATENDENTE] || 0,
+    waiting: counts[STATUS.FALHOU] || 0,
+  };
+}

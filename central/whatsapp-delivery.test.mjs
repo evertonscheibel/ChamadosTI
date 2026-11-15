@@ -8,6 +8,7 @@ import {
   hold,
   runTracked,
   rescueStuck,
+  deliveryStats,
 } from "./whatsapp-delivery.mjs";
 
 function freshDb() {
@@ -162,4 +163,38 @@ test("mensagens antigas (já existentes antes da mudança) contam como tratadas"
   ).run();
   assert.equal(isSettled(db, new Set(), 8), true);
   assert.equal(claimMessage(db, new Set(), msg(8)), false);
+});
+
+test("resumo do painel conta passadas à atendente e as que ainda esperam", async () => {
+  const db = freshDb();
+  claimMessage(db, new Set(), msg(10, 1));
+  claimMessage(db, new Set(), msg(11, 2));
+  claimMessage(db, new Set(), msg(12, 3));
+  await runTracked(db, {
+    payload: msg(10, 1),
+    work: async () => {},
+    notify: async () => {},
+  });
+  await runTracked(db, {
+    payload: msg(11, 2),
+    work: async () => {
+      throw new Error("x");
+    },
+    notify: async () => {},
+  });
+  await runTracked(db, {
+    payload: msg(12, 3),
+    work: async () => {
+      throw new Error("x");
+    },
+    notify: async () => {
+      throw new Error("Chatwoot fora");
+    },
+  });
+  assert.deepEqual(deliveryStats(db, SINCE), {
+    since: SINCE,
+    escalated: 1,
+    waiting: 1,
+  });
+  assert.deepEqual(deliveryStats(db, "2999-01-01T00:00:00.000Z").waiting, 0);
 });

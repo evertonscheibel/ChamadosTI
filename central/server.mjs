@@ -62,7 +62,7 @@ import {
   escalateToHuman,
 } from "./chatwoot-client.mjs";
 import { recoverMissed } from "./whatsapp-recovery.mjs";
-import { claimMessage, isSettled, hold, runTracked, rescueStuck } from "./whatsapp-delivery.mjs";
+import { claimMessage, isSettled, hold, runTracked, rescueStuck, deliveryStats } from "./whatsapp-delivery.mjs";
 import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
 import { startWahaWatchdog } from "./waha-watchdog.mjs";
 import { allowedOrigins } from "./origins.mjs";
@@ -1913,7 +1913,12 @@ http
           return json(res, 200, { user: publicUser(user) });
         if (pathname === "/api/whatsapp/status" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
-          return json(res, 200, { ...wahaWatchdog.getHealth(), recovery: recoveryState });
+          return json(res, 200, {
+            ...wahaWatchdog.getHealth(),
+            recovery: recoveryState,
+            // Últimas 24 h: mensagens que o bot não tratou (passadas à atendente / ainda esperando).
+            delivery: deliveryStats(db, new Date(Date.now() - 86400000).toISOString()),
+          });
         }
         if (pathname === "/api/whatsapp/documents" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");

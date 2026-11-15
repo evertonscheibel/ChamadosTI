@@ -1,9 +1,24 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Bell, BellOff, BellRing, X, AlertTriangle, Inbox, WifiOff, Repeat } from "lucide-react";
+import {
+  Bell,
+  BellOff,
+  BellRing,
+  X,
+  AlertTriangle,
+  Inbox,
+  WifiOff,
+  Repeat,
+} from "lucide-react";
 import { MessageSquareText } from "lucide-react";
 import { displayName, remaining, type QueueRequest } from "./RhQueue";
 
-type Alert = { key: string; id: string; kind: "novo" | "mensagem" | "laranja" | "vermelho"; title: string; body: string };
+type Alert = {
+  key: string;
+  id: string;
+  kind: "novo" | "mensagem" | "laranja" | "vermelho";
+  title: string;
+  body: string;
+};
 type Seen = { level: number; last: string; late: boolean };
 const RANK = { verde: 0, amarelo: 1, laranja: 2, vermelho: 3 } as const;
 const SOUND_KEY = "central-alert-sound";
@@ -35,10 +50,26 @@ function beep(urgent: boolean) {
 }
 
 /** Pop-up do Windows quando a central não está em foco (outra janela ou outra aba na frente). */
-function popup(title: string, body: string, tag: string, sticky: boolean, onClick?: () => void) {
-  if (!("Notification" in window) || Notification.permission !== "granted" || document.hasFocus()) return;
+function popup(
+  title: string,
+  body: string,
+  tag: string,
+  sticky: boolean,
+  onClick?: () => void,
+) {
+  if (
+    !("Notification" in window) ||
+    Notification.permission !== "granted" ||
+    document.hasFocus()
+  )
+    return;
   try {
-    const n = new Notification(title, { body, tag, icon: "/brand/frizelo-logo.png", requireInteraction: sticky });
+    const n = new Notification(title, {
+      body,
+      tag,
+      icon: "/brand/frizelo-logo.png",
+      requireInteraction: sticky,
+    });
     n.onclick = () => {
       window.focus();
       onClick?.();
@@ -69,7 +100,11 @@ const store = (key: string, on: boolean) => {
  * e de prazo crítico: aviso na tela, som, pop-up do Windows e título piscando.
  * Enquanto houver chamado recebido sem ninguém, lembra a cada 2 minutos.
  */
-export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpen?: (id: string) => void) {
+export function useTicketAlerts(
+  requests: QueueRequest[],
+  active: boolean,
+  onOpen?: (id: string) => void,
+) {
   const seen = useRef<Map<string, Seen> | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [sound, setSound] = useState(() => stored(SOUND_KEY));
@@ -77,7 +112,9 @@ export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpe
   const [flash, setFlash] = useState<string | null>(null);
   const openRef = useRef(onOpen);
   openRef.current = onOpen;
-  const waiting = active ? requests.filter((r) => r.status === "Recebida" && !r.assigned_to) : [];
+  const waiting = active
+    ? requests.filter((r) => r.status === "Recebida" && !r.assigned_to)
+    : [];
 
   useEffect(() => {
     if (!active) {
@@ -132,17 +169,35 @@ export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpe
           key: `${r.id}-${now}`,
           id: r.id,
           kind: now === RANK.vermelho ? "vermelho" : "laranja",
-          title: now === RANK.vermelho ? `Prazo estourado: ${r.protocol}` : `Prazo perto do fim: ${r.protocol}`,
+          title:
+            now === RANK.vermelho
+              ? `Prazo estourado: ${r.protocol}`
+              : `Prazo perto do fim: ${r.protocol}`,
           body: `${r.subject} · ${r.due_at ? remaining(r.due_at) : ""}`,
         });
       seen.current.set(r.id, current);
     }
     if (!fresh.length) return;
-    setAlerts((current) => [...fresh, ...current.filter((a) => !fresh.some((f) => f.key === a.key))].slice(0, 5));
+    setAlerts((current) =>
+      [
+        ...fresh,
+        ...current.filter((a) => !fresh.some((f) => f.key === a.key)),
+      ].slice(0, 5),
+    );
     if (sound) beep(fresh.some((a) => a.kind === "vermelho"));
-    for (const a of fresh) popup(a.title, a.body, a.key, a.kind !== "laranja", () => openRef.current?.(a.id));
+    for (const a of fresh)
+      popup(a.title, a.body, a.key, a.kind !== "laranja", () =>
+        openRef.current?.(a.id),
+      );
     if (!document.hasFocus())
-      setFlash({ novo: "🔔 Novo chamado", mensagem: "💬 Nova mensagem", laranja: "⚠️ Prazo crítico", vermelho: "⚠️ Prazo crítico" }[fresh[0].kind]);
+      setFlash(
+        {
+          novo: "🔔 Novo chamado",
+          mensagem: "💬 Nova mensagem",
+          laranja: "⚠️ Prazo crítico",
+          vermelho: "⚠️ Prazo crítico",
+        }[fresh[0].kind],
+      );
   }, [requests, active]);
 
   // Lembrete: chamado recebido e ninguém assumiu. Repete a cada 2 minutos até alguém pegar.
@@ -152,7 +207,9 @@ export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpe
     const timer = window.setInterval(() => {
       if (sound) beep(false);
       popup(
-        waitingCount === 1 ? "1 chamado aguardando alguém assumir" : `${waitingCount} chamados aguardando alguém assumir`,
+        waitingCount === 1
+          ? "1 chamado aguardando alguém assumir"
+          : `${waitingCount} chamados aguardando alguém assumir`,
         "Abra a central para assumir.",
         "lembrete-fila",
         false,
@@ -191,15 +248,32 @@ export function useTicketAlerts(requests: QueueRequest[], active: boolean, onOpe
     store(REMINDER_KEY, !reminder);
     setReminder(!reminder);
   };
-  const dismiss = (key: string) => setAlerts((current) => current.filter((a) => a.key !== key));
+  const dismiss = (key: string) =>
+    setAlerts((current) => current.filter((a) => a.key !== key));
   const test = () => {
     beep(false);
-    setAlerts((current) => [
-      { key: `teste-${Date.now()}`, id: "", kind: "novo" as const, title: "Aviso de teste", body: "É assim que um chamado novo aparece." },
-      ...current,
-    ].slice(0, 5));
+    setAlerts((current) =>
+      [
+        {
+          key: `teste-${Date.now()}`,
+          id: "",
+          kind: "novo" as const,
+          title: "Aviso de teste",
+          body: "É assim que um chamado novo aparece.",
+        },
+        ...current,
+      ].slice(0, 5),
+    );
   };
-  return { alerts, dismiss, sound, toggleSound, reminder, toggleReminder, test };
+  return {
+    alerts,
+    dismiss,
+    sound,
+    toggleSound,
+    reminder,
+    toggleReminder,
+    test,
+  };
 }
 
 export function AlertToasts({
@@ -223,13 +297,23 @@ export function AlertToasts({
               if (a.id) onOpen(a.id);
             }}
           >
-            {a.kind === "novo" ? <Inbox size={18} /> : a.kind === "mensagem" ? <MessageSquareText size={18} /> : <AlertTriangle size={18} />}
+            {a.kind === "novo" ? (
+              <Inbox size={18} />
+            ) : a.kind === "mensagem" ? (
+              <MessageSquareText size={18} />
+            ) : (
+              <AlertTriangle size={18} />
+            )}
             <span>
               <strong>{a.title}</strong>
               <small>{a.body}</small>
             </span>
           </button>
-          <button className="toast-close" aria-label="Dispensar aviso" onClick={() => dismiss(a.key)}>
+          <button
+            className="toast-close"
+            aria-label="Dispensar aviso"
+            onClick={() => dismiss(a.key)}
+          >
             <X size={15} />
           </button>
         </div>
@@ -253,20 +337,28 @@ export function AlertSettings({
   test: () => void;
 }) {
   const supported = "Notification" in window;
-  const [permission, setPermission] = useState(supported ? Notification.permission : "denied");
+  const [permission, setPermission] = useState(
+    supported ? Notification.permission : "denied",
+  );
   return (
     <div className="alert-settings">
       {supported && permission === "default" && (
         <button
           className="icon-text icon-text-strong"
-          onClick={() => void Notification.requestPermission().then(setPermission)}
+          onClick={() =>
+            void Notification.requestPermission().then(setPermission)
+          }
           title="Mostrar avisos do Windows quando a central estiver atrás de outra janela"
         >
           <BellRing size={15} />
           Ativar pop-up do Windows
         </button>
       )}
-      <button className="icon-text" onClick={toggleSound} title={sound ? "Silenciar o som dos avisos" : "Ligar o som dos avisos"}>
+      <button
+        className="icon-text"
+        onClick={toggleSound}
+        title={sound ? "Silenciar o som dos avisos" : "Ligar o som dos avisos"}
+      >
         {sound ? <Bell size={15} /> : <BellOff size={15} />}
         {sound ? "Som ligado" : "Som desligado"}
       </button>
@@ -278,29 +370,77 @@ export function AlertSettings({
         <Repeat size={15} />
         {reminder ? "Lembrete a cada 2 min" : "Lembrete desligado"}
       </button>
-      <button className="icon-text" onClick={test} title="Tocar o som e mostrar um aviso de exemplo">
+      <button
+        className="icon-text"
+        onClick={test}
+        title="Tocar o som e mostrar um aviso de exemplo"
+      >
         Testar
       </button>
     </div>
   );
 }
 
-export type WhatsappHealth = { enabled: boolean; health: string; lastRestart: string | null; lastReason: string | null };
-/** Faixa na fila quando o WhatsApp do RH não está recebendo mensagens. */
-export function WhatsappBanner({ health }: { health: WhatsappHealth | null }) {
-  if (!health?.enabled) return null;
-  const text: Record<string, string> = {
-    waha_offline: "O serviço do WhatsApp (WAHA) não está respondendo. Mensagens dos colaboradores não estão chegando.",
-    qr: "O WhatsApp do RH foi desconectado. É preciso ler o QR code no painel do WAHA para reconectar.",
-    sem_conexao: "O WhatsApp do RH está sem conexão. Tentando reconectar automaticamente…",
-    reconectando: "Reconectando o WhatsApp do RH automaticamente…",
+export type WhatsappHealth = {
+  enabled: boolean;
+  health: string;
+  lastRestart: string | null;
+  lastReason: string | null;
+  recovery?: {
+    enabled: boolean;
+    lastRun: string | null;
+    lastError: string | null;
   };
-  if (!text[health.health]) return null;
-  const serious = health.health === "qr" || health.health === "waha_offline";
+  delivery?: { since: string; escalated: number; waiting: number };
+};
+const WAHA_TEXT: Record<string, string> = {
+  waha_offline:
+    "O serviço do WhatsApp (WAHA) não está respondendo. Mensagens dos colaboradores não estão chegando.",
+  qr: "O WhatsApp do RH foi desconectado. É preciso ler o QR code no painel do WAHA para reconectar.",
+  sem_conexao:
+    "O WhatsApp do RH está sem conexão. Tentando reconectar automaticamente…",
+  reconectando: "Reconectando o WhatsApp do RH automaticamente…",
+};
+/** Avisos da faixa: WhatsApp fora, central sem falar com o Chatwoot, mensagens esperando. */
+export function whatsappWarnings(
+  health: WhatsappHealth | null,
+): { text: string; serious: boolean }[] {
+  if (!health) return [];
+  const warnings: { text: string; serious: boolean }[] = [];
+  if (health.enabled && WAHA_TEXT[health.health])
+    warnings.push({
+      text: WAHA_TEXT[health.health],
+      serious: health.health === "qr" || health.health === "waha_offline",
+    });
+  const waiting = health.delivery?.waiting ?? 0;
+  if (waiting > 0)
+    warnings.push({
+      text: `${waiting} ${waiting === 1 ? "mensagem do WhatsApp não pôde" : "mensagens do WhatsApp não puderam"} ser tratada${waiting === 1 ? "" : "s"} nem passada${waiting === 1 ? "" : "s"} para uma atendente. A central tenta de novo a cada 5 minutos; confira as conversas no Chatwoot.`,
+      serious: true,
+    });
+  else if (health.recovery?.enabled && health.recovery.lastError)
+    warnings.push({
+      text: "A central não está conseguindo falar com o Chatwoot. Mensagens novas podem demorar a ser tratadas; elas serão recuperadas quando a conexão voltar.",
+      serious: true,
+    });
+  return warnings;
+}
+/** Faixa na fila quando o WhatsApp do RH não está recebendo ou tratando mensagens. */
+export function WhatsappBanner({ health }: { health: WhatsappHealth | null }) {
+  const warnings = whatsappWarnings(health);
+  if (!warnings.length) return null;
   return (
-    <div className={`wa-banner ${serious ? "wa-banner-serious" : ""}`} role="alert">
-      <WifiOff size={17} />
-      <span>{text[health.health]}</span>
-    </div>
+    <>
+      {warnings.map((w) => (
+        <div
+          key={w.text}
+          className={`wa-banner ${w.serious ? "wa-banner-serious" : ""}`}
+          role="alert"
+        >
+          <WifiOff size={17} />
+          <span>{w.text}</span>
+        </div>
+      ))}
+    </>
   );
 }
