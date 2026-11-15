@@ -5,8 +5,8 @@ Containers: `postgres` e `redis` (do Chatwoot), `chatwoot`, `sidekiq`, `waha` (W
 
 | Acesso | Endereço | Quem |
 |---|---|---|
-| Central do RH | http://10.1.1.53:45873 | equipe do RH (rede 10.1.1.0/24) |
-| Chatwoot (administração) | http://10.1.1.53:3100 | TI |
+| Central do RH | https://10.1.1.53:45873 | equipe do RH (rede 10.1.1.0/24) |
+| Chatwoot (administração) | https://10.1.1.53:3100 | TI |
 
 O Docker só publica portas em 127.0.0.1. O nginx do servidor expõe as portas 45873 e 3100, e o ufw libera essas portas só para a rede interna.
 Os segredos ficam em `.env`, `central.env`, `chatwoot.env` e `waha.env` (modo 600), gerados por `gerar-env.mjs` e nunca versionados.
@@ -25,7 +25,12 @@ systemctl list-timers frizelo-rh-backup.timer
 ```
 
 Backup diário às 03:30, guardado por 14 dias em `/opt/backups/frizelo-rh`. Inclui o banco da central, o banco e os anexos do Chatwoot, a sessão do WhatsApp e as configurações.
-Ainda falta uma cópia fora do servidor.
+O arquivo é cifrado com `age` (chave pública em `backup-recipient.txt`). **A chave privada não fica no servidor**: está em `D:\Backups\bridge-prod\CHAVE` no PC 10.1.1.231 (guarde também uma cópia fora dele).
+Cópia fora do servidor: a tarefa agendada "Copiar backup frizelo-rh" do PC 10.1.1.231 puxa os backups às 04:30 para `D:\Backups\bridge-prod\frizelo-rh` (90 dias), com uma chave SSH que só lista e baixa os `.tar.age`.
+Para abrir: `age -d -i frizelo-rh-backup.age-key.txt -o backup.tar frizelo-rh-AAAAMMDD-HHMM.tar.age`.
+
+HTTPS nas portas 45873 e 3100 com o certificado do servidor (autoassinado); `http://` na mesma porta é redirecionado.
+O Chatwoot usa o role `chatwoot_app` (sem superusuário); `chatwoot` fica para backup e manutenção.
 
 ## Ensaio (sem parar a homologação)
 
@@ -44,7 +49,7 @@ Ainda falta uma cópia fora do servidor.
 4. No servidor, rode `./restaurar.sh final`. Isso restaura os dados, sobe o WAHA com a mesma sessão (não precisa ler o QR) e recria o app do Chatwoot.
 5. Confira:
    - a sessão `default` está WORKING;
-   - a central responde em http://10.1.1.53:45873;
+   - a central responde em https://10.1.1.53:45873;
    - uma mensagem do celular de teste abre ou complementa um chamado;
    - a resposta do RH chega no celular.
 6. **Volta atrás, se der errado:** `docker compose stop waha central` no servidor. Depois religue o WAHA (`docker start waha`), o Chatwoot e a central neste PC.

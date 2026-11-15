@@ -124,6 +124,19 @@ export async function handOffTicket(conversationId, ticket) {
   await handToHuman(conversationId);
 }
 
+/**
+ * O atendente virtual não conseguiu tratar a mensagem: nota interna explicando o motivo
+ * e a conversa vai para as atendentes, para a solicitação não ficar sem resposta.
+ */
+export async function escalateToHuman(conversationId, reason) {
+  await conversationApi(conversationId, "/messages", "POST", {
+    content: `O atendente virtual não conseguiu tratar a última mensagem (${reason}). Por favor, continue o atendimento por aqui.`,
+    message_type: "outgoing",
+    private: true,
+  });
+  await handToHuman(conversationId);
+}
+
 /** Tira a conversa do bot ("open"), o que a coloca no rodízio das atendentes. */
 export function handToHuman(conversationId) {
   return conversationApi(conversationId, "/toggle_status", "POST", {

@@ -59,8 +59,10 @@ import {
   downloadAttachment,
   listInboxConversations,
   listConversationMessages,
+  escalateToHuman,
 } from "./chatwoot-client.mjs";
 import { recoverMissed } from "./whatsapp-recovery.mjs";
+import { claimMessage, isSettled, hold, runTracked, rescueStuck } from "./whatsapp-delivery.mjs";
 import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
 import { startWahaWatchdog } from "./waha-watchdog.mjs";
 import { allowedOrigins } from "./origins.mjs";
@@ -963,28 +965,35 @@ async function processWhatsappRh(payload, config) {
   if (step.reply) await sendChatwootMessage(conversationId, step.reply);
 }
 // --- Mensagens do WhatsApp: fila por conversa, deduplicação e recuperação --------
+// Ids de mensagens na fila desta execução da central (ver whatsapp-delivery.mjs).
+const whatsappInFlight = new Set();
+/** Falso se a mensagem já foi (ou está sendo) tratada. */
 function markWhatsappSeen(payload) {
-  if (!Number.isInteger(Number(payload.id)) || !payload.id) return true;
-  return (
-    db
-      .prepare("INSERT OR IGNORE INTO whatsapp_seen (message_id,conversation_id,seen_at) VALUES (?,?,?)")
-      .run(Number(payload.id), String(payload.conversation?.id ?? ""), new Date().toISOString()).changes > 0
-  );
+  return claimMessage(db, whatsappInFlight, payload);
 }
-/** Processa em ordem as mensagens de cada conversa (uma de cada vez). */
+/** Processa em ordem as mensagens de cada conversa (uma de cada vez). Erro -> atendente. */
 function enqueueWhatsapp(payload, config) {
   const conversationId = payload.conversation.id;
+  const release = hold(whatsappInFlight, payload);
   const previous = chatwootQueues.get(conversationId) || Promise.resolve();
   const next = previous
-    .then(() => processWhatsappRh(payload, config))
+    .then(() =>
+      runTracked(db, {
+        payload,
+        work: () => processWhatsappRh(payload, config),
+        notify: escalateToHuman,
+        log: console.error,
+      }),
+    )
     .catch((e) => console.error(`WhatsApp RH conversa ${conversationId}:`, e.message))
     .finally(() => {
+      release();
       if (chatwootQueues.get(conversationId) === next) chatwootQueues.delete(conversationId);
     });
   chatwootQueues.set(conversationId, next);
   return next;
 }
-const recoveryState = { enabled: false, lastRun: null, lastRecovered: 0, lastError: null };
+const recoveryState = { enabled: false, lastRun: null, lastRecovered: 0, lastRescued: 0, lastError: null };
 /** Busca no Chatwoot o que chegou enquanto a central estava fora (no início e a cada 5 min). */
 async function recoverWhatsapp() {
   const chatwoot = chatwootConfiguration();
@@ -999,10 +1008,16 @@ async function recoverWhatsapp() {
   }
   const since = Math.max(Number(start), Math.floor(Date.now() / 1000) - 3 * 86400);
   try {
+    // Primeiro: o que deu erro ou parou no meio (central caiu) vai para uma atendente.
+    recoveryState.lastRescued = await rescueStuck(db, whatsappInFlight, {
+      sinceIso: new Date(since * 1000).toISOString(),
+      notify: escalateToHuman,
+      log: console.log,
+    });
     const recovered = await recoverMissed({
       inboxId: config.inboxId,
       since,
-      seen: (id) => Boolean(db.prepare("SELECT 1 FROM whatsapp_seen WHERE message_id=?").get(Number(id))),
+      seen: (id) => isSettled(db, whatsappInFlight, id),
       listConversations: (page) => listInboxConversations(config.inboxId, page),
       listMessages: (id) => listConversationMessages(id),
       log: console.log,

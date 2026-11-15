@@ -70,6 +70,10 @@ column("requests", "first_response_alerted", "INTEGER NOT NULL DEFAULT 0");
 // Mensagens do WhatsApp já processadas (id no Chatwoot): evita processar duas vezes
 // e permite recuperar as que chegaram com a central fora do ar.
 db.exec("CREATE TABLE IF NOT EXISTS whatsapp_seen (message_id INTEGER PRIMARY KEY, conversation_id TEXT, seen_at TEXT NOT NULL)");
+// Estado de cada mensagem (ver whatsapp-delivery.mjs). As que já existiam foram tratadas: "ok".
+column("whatsapp_seen", "status", "TEXT NOT NULL DEFAULT 'ok'");
+column("whatsapp_seen", "error", "TEXT");
+column("whatsapp_seen", "updated_at", "TEXT");
 db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 // Entrega das respostas do RH no WhatsApp: pendente | enviado | falhou | nao_entregue.
 column("messages", "wa_status", "TEXT");
