@@ -294,6 +294,15 @@ export function ticketClosedText(protocol, { survey = false } = {}) {
     return `${text}\n\nComo foi o atendimento? Responda com uma nota de **1** a **5**\n(1 = muito ruim · 5 = ótimo).\n${SIGNATURE}`;
   return `${text}\nSe precisar de algo mais, é só mandar uma nova mensagem por aqui.\n${SIGNATURE}`;
 }
+/** Vários chamados concluídos de uma vez (atendente resolveu a conversa): uma mensagem só. */
+export function ticketsClosedText(protocols, { survey = false } = {}) {
+  if (protocols.length === 1) return ticketClosedText(protocols[0], { survey });
+  const list = protocols.map((p) => `**${p}**`);
+  const text = `Seus chamados nº ${list.slice(0, -1).join(", ")} e ${list.at(-1)} foram atendidos. ✅`;
+  if (survey)
+    return `${text}\n\nComo foi o atendimento? Responda com uma nota de **1** a **5**\n(1 = muito ruim · 5 = ótimo).\n${SIGNATURE}`;
+  return `${text}\nSe precisar de algo mais, é só mandar uma nova mensagem por aqui.\n${SIGNATURE}`;
+}
 export function awaitingEmployeeText(protocol) {
   return `📝 O RH precisa de uma informação sua para continuar o **chamado nº ${protocol}**.\nResponda por aqui para o atendimento seguir.\n${SIGNATURE}`;
 }

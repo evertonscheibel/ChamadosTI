@@ -298,11 +298,53 @@ async function notaPeloChatwoot() {
   check("conversa volta a resolvida depois da nota", resolved);
 }
 
+async function variosChamados() {
+  current = "Vários chamados na mesma conversa";
+  console.log(`\n${current}`);
+  const { conv, request: a, protocol: pa } = await openTicket("varios");
+  const more = [];
+  for (const [option, text] of [["4", "Atestado de 2 dias (homologação)."], ["8", "Quero marcar férias (homologação)."]]) {
+    await say(conv, "menu");
+    await say(conv, option);
+    const r = await say(conv, `Teste Homologação, setor TI. ${text}`);
+    more.push(r.join(" ").match(/FRZ-\d{4}-\d{6}/)?.[0]);
+  }
+  check("três chamados abertos na conversa", pa && more.every(Boolean), [pa, ...more].join(", "));
+  const all = (await central("/api/requests")).requests.filter((r) => String(r.chatwoot_conversation_id) === String(conv.id));
+
+  await central(`/api/requests/${a.id}/messages`, "POST", { body: "Resolvido o primeiro (homologação)." });
+  await newReplies(conv);
+  await central(`/api/requests/${a.id}`, "PATCH", { status: "Concluída" });
+  const r1 = await newReplies(conv);
+  await sleep(4000);
+  const extra = await newReplies(conv, 3000);
+  check("concluir um chamado avisa só dele", r1.length === 1 && r1[0].includes(pa) && extra.length === 0, [...r1, ...extra].join(" | "));
+  const still = (await central("/api/requests")).requests.filter((r) => String(r.chatwoot_conversation_id) === String(conv.id) && r.status !== "Concluída");
+  check("os outros dois continuam abertos", still.length === 2, still.map((r) => r.protocol).join(", "));
+  check("conversa não é resolvida com chamado aberto", (await conversation(conv)).status !== "resolved");
+
+  await cw(`/conversations/${conv.id}/toggle_status`, "POST", { status: "resolved" });
+  const r2 = await newReplies(conv);
+  await sleep(4000);
+  const extra2 = await newReplies(conv, 3000);
+  check(
+    "atendente resolve: uma mensagem só com os dois chamados e a nota",
+    r2.length === 1 && more.every((p) => r2[0].includes(p)) && r2[0].includes("nota") && extra2.length === 0,
+    [...r2, ...extra2].join(" | "),
+  );
+  await say(conv, "5");
+  const last = all.find((r) => r.protocol === more[1]);
+  const rated = await waitFor(async () => ((await central(`/api/requests/${last.id}`)).request?.rating === 5 ? true : null));
+  check("nota vai para o último chamado", rated);
+  const resolved = await waitFor(async () => ((await conversation(conv)).status === "resolved" ? true : null));
+  check("conversa resolvida no fim", resolved);
+}
+
 // --- Execução ----------------------------------------------------------------------
 const started = Date.now();
 await central("/api/login", "POST", RH);
 console.log(`Central ${CENTRAL} · Chatwoot ${CW} · caixa ${INBOX}`);
-for (const scenario of [chamadoCompleto, pedirAtendente, statusSemChamado, telefoneForaDoTeste, okSemRepetir, cancelarPeloColaborador, notaPeloChatwoot]) {
+for (const scenario of [chamadoCompleto, pedirAtendente, statusSemChamado, telefoneForaDoTeste, okSemRepetir, cancelarPeloColaborador, notaPeloChatwoot, variosChamados]) {
   try {
     await scenario();
   } catch (e) {

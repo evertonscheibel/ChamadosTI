@@ -17,6 +17,7 @@ import {
   ticketClosedText,
   statusText,
   formatLocal,
+  ticketsClosedText,
   chatwootTicket,
 } from "./whatsapp-rh.mjs";
 
@@ -323,4 +324,11 @@ test("colaborador cancela o chamado com confirmação", () => {
   const other = nextStep(ask.state, "na verdade quero mandar o atestado");
   assert.equal(other.append, true);
   assert.equal(other.state.stage, "chamado");
+});
+
+test("vários chamados concluídos de uma vez viram uma mensagem só", () => {
+  assert.equal(ticketsClosedText(["FRZ-1"]), ticketClosedText("FRZ-1"));
+  const t = ticketsClosedText(["FRZ-1", "FRZ-2", "FRZ-3"], { survey: true });
+  assert.match(t, /chamados nº \*\*FRZ-1\*\*, \*\*FRZ-2\*\* e \*\*FRZ-3\*\* foram atendidos/);
+  assert.match(t, /nota de \*\*1\*\* a \*\*5\*\*/);
 });

@@ -100,6 +100,7 @@ import {
   cancelConfirmText,
   keptText,
   cancelledText,
+  ticketsClosedText,
 } from "./whatsapp-rh.mjs";
 import { holeritePdf, espelhoPdf } from "./senior-documents.mjs";
 import { situationNames } from "./senior.mjs";
@@ -886,11 +887,11 @@ async function processWhatsappRh(payload, config) {
       const owner = db.prepare("SELECT u.id,u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?").get(row.request_id);
       db.prepare("UPDATE requests SET rating=?,rated_at=? WHERE id=? AND status='Concluída'").run(step.rate, new Date().toISOString(), row.request_id);
       history(row.request_id, owner, `Atendimento avaliado pelo colaborador: ${step.rate} de 5`, "rating", { nota: step.rate });
-      saveWhatsappState(conversationId, step.state, phone, null);
+      afterTicketClosed(conversationId, phone, step.state);
     });
     await sendChatwootMessage(conversationId, ratingThanksText(step.rate));
     // A nota reabre a conversa no Chatwoot; o atendimento já terminou, então volta a resolvida.
-    await resolveConversation(conversationId);
+    await resolveWhenDone(conversationId);
     return;
   }
   if (step.identity) {
@@ -914,7 +915,7 @@ async function processWhatsappRh(payload, config) {
     // "obrigado" depois de encerrado: despedida e a conversa (reaberta pela mensagem) volta a resolvida.
     saveWhatsappState(conversationId, step.state, phone);
     await sendChatwootMessage(conversationId, goodbyeText);
-    await resolveConversation(conversationId);
+    await resolveWhenDone(conversationId);
     return;
   }
   const protocol = row?.request_id ? db.prepare("SELECT protocol FROM requests WHERE id=?").get(row.request_id)?.protocol : null;
@@ -940,7 +941,7 @@ async function processWhatsappRh(payload, config) {
         to: "Concluída",
         cancelado: true,
       });
-      saveWhatsappState(conversationId, step.state, phone);
+      afterTicketClosed(conversationId, phone, step.state);
       return request;
     });
     if (!cancelled) {
@@ -952,7 +953,7 @@ async function processWhatsappRh(payload, config) {
       console.error(`Nota do cancelamento ${cancelled.protocol}:`, e.message),
     );
     syncChatwootTicket(cancelled.id);
-    await resolveConversation(conversationId);
+    await resolveWhenDone(conversationId);
     return;
   }
   if (step.append || step.open) {
@@ -1083,7 +1084,7 @@ async function closeIdleWhatsapp(now = Date.now()) {
     }
     try {
       const status = await conversationStatus(row.conversation_id);
-      if (status === "pending") await resolveConversation(row.conversation_id);
+      if (status === "pending" && !openOnConversation(row.conversation_id)) await resolveConversation(row.conversation_id);
       if (status === "pending" || status === "resolved") {
         set("encerrado");
         closed++;
@@ -1324,6 +1325,30 @@ async function automaticAlerts(now = Date.now()) {
   }
 }
 
+/**
+ * Depois da nota ou do cancelamento: se a conversa ainda tem outro chamado aberto, o
+ * colaborador volta para ele (a próxima mensagem complementa esse chamado); senão, encerra.
+ */
+function afterTicketClosed(conversationId, phone, closedState) {
+  const other = db
+    .prepare("SELECT id FROM requests WHERE chatwoot_conversation_id=? AND status<>'Concluída' ORDER BY created_at DESC LIMIT 1")
+    .get(String(conversationId));
+  if (other) saveWhatsappState(conversationId, { stage: "chamado", theme: null, invalid: 0, data: {} }, phone, other.id);
+  else saveWhatsappState(conversationId, closedState, phone);
+}
+
+/** Chamados ainda abertos ligados à conversa do Chatwoot. */
+const openOnConversation = (conversationId) =>
+  db.prepare("SELECT COUNT(*) n FROM requests WHERE chatwoot_conversation_id=? AND status<>'Concluída'").get(String(conversationId)).n;
+/**
+ * A central só resolve a conversa no Chatwoot quando não sobra chamado aberto nela.
+ * Resolver a conversa avisa a central (webhook) como se a atendente tivesse encerrado
+ * tudo, o que concluiria os outros chamados da conversa.
+ */
+async function resolveWhenDone(conversationId) {
+  if (!openOnConversation(conversationId)) await resolveConversation(conversationId);
+}
+
 /** Chamado do WhatsApp concluído na central: avisa o colaborador e encerra a conversa. */
 async function closeWhatsappTicket(request) {
   const conversationId = request.chatwoot_conversation_id;
@@ -1338,7 +1363,7 @@ async function closeWhatsappTicket(request) {
       new Date().toISOString(),
       String(conversationId),
     );
-    await resolveConversation(conversationId);
+    await resolveWhenDone(conversationId);
   }
 }
 
@@ -1656,13 +1681,16 @@ http
               new Date().toISOString(),
               String(payload.id),
             );
-          for (const request of whatsappOpen) {
-            const survey = request.id === surveyId;
-            await sendChatwootMessage(payload.id, ticketClosedText(request.protocol, { survey })).catch((e) =>
-              console.error(`WhatsApp RH conversa ${payload.id}:`, e.message),
-            );
-            syncChatwootTicket(request.id);
-          }
+          // Uma mensagem só, mesmo com vários chamados na conversa.
+          if (whatsappOpen.length)
+            await sendChatwootMessage(
+              payload.id,
+              ticketsClosedText(
+                whatsappOpen.map((r) => r.protocol),
+                { survey: whatsappOpen.some((r) => r.id === surveyId) },
+              ),
+            ).catch((e) => console.error(`WhatsApp RH conversa ${payload.id}:`, e.message));
+          for (const request of whatsappOpen) syncChatwootTicket(request.id);
           return json(res, 200, { ok: true, mirrored: true });
         }
         // WhatsApp do RH: atendente virtual da central (menu -> chamado). Trata toda
