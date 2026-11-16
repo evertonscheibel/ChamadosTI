@@ -65,7 +65,7 @@ import {
   conversationStatus,
 } from "./chatwoot-client.mjs";
 import { recoverMissed } from "./whatsapp-recovery.mjs";
-import { claimMessage, isSettled, hold, runTracked, rescueStuck, deliveryStats } from "./whatsapp-delivery.mjs";
+import { claimMessage, ignoreMessage, isSettled, hold, runTracked, rescueStuck, deliveryStats } from "./whatsapp-delivery.mjs";
 import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
 import { startWahaWatchdog } from "./waha-watchdog.mjs";
 import { allowedOrigins } from "./origins.mjs";
@@ -1128,7 +1128,7 @@ async function recoverWhatsapp() {
       log: console.log,
       process: async (payload) => {
         const phone = payload.sender?.phone_number || payload.conversation?.meta?.sender?.phone_number;
-        if (!phoneAllowed(phone, config)) return;
+        if (!phoneAllowed(phone, config)) return ignoreMessage(db, payload);
         if (!markWhatsappSeen(payload)) return;
         await enqueueWhatsapp(payload, config);
       },
@@ -1707,7 +1707,9 @@ http
           const conversationId = payload.conversation.id;
           const phone = payload.sender?.phone_number || payload.conversation?.meta?.sender?.phone_number;
           if (!phoneAllowed(phone, whatsapp)) {
-            // Modo teste: contato fora da lista vai direto para as atendentes no Chatwoot.
+            // Modo teste: contato fora da lista vai direto para as atendentes no Chatwoot. A mensagem
+            // fica registrada como ignorada, para a recuperação não respondê-la se o número entrar na lista.
+            ignoreMessage(db, payload);
             if (payload.conversation.status === "pending") await handToHuman(conversationId).catch(() => {});
             return json(res, 200, { ok: true, skipped: true });
           }

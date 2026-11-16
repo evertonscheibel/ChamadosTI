@@ -198,3 +198,13 @@ test("resumo do painel conta passadas à atendente e as que ainda esperam", asyn
   });
   assert.deepEqual(deliveryStats(db, "2999-01-01T00:00:00.000Z").waiting, 0);
 });
+
+test("mensagem de número fora do modo teste fica ignorada e não é respondida depois", async () => {
+  const { ignoreMessage } = await import("./whatsapp-delivery.mjs");
+  const db = freshDb();
+  ignoreMessage(db, msg(20));
+  assert.equal(status(db, 20), "ignorada");
+  assert.equal(isSettled(db, new Set(), 20), true, "a recuperação não a considera pendente");
+  assert.equal(claimMessage(db, new Set(), msg(20)), false, "nem quando o número entra na lista");
+  assert.equal(deliveryStats(db, SINCE).waiting, 0);
+});

@@ -18,6 +18,8 @@ export const STATUS = Object.freeze({
   OK: "ok",
   ATENDENTE: "atendente",
   FALHOU: "falhou",
+  // Fora do modo teste: foi para as atendentes. Não volta a ser tratada se o número entrar na lista.
+  IGNORADA: "ignorada",
 });
 
 const messageId = (payload) => {
@@ -62,6 +64,15 @@ export function claimMessage(db, inFlight, payload) {
 }
 
 /** Para a recuperação: a mensagem já está resolvida (ou em andamento) e não deve ser pega de novo. */
+/** Mensagem que o bot não trata (número fora do modo teste): fica registrada como resolvida. */
+export function ignoreMessage(db, payload) {
+  const id = messageId(payload);
+  if (!id) return;
+  db.prepare(
+    "INSERT OR IGNORE INTO whatsapp_seen (message_id,conversation_id,seen_at,status,updated_at) VALUES (?,?,?,?,?)",
+  ).run(id, String(payload.conversation?.id ?? ""), new Date().toISOString(), STATUS.IGNORADA, new Date().toISOString());
+}
+
 export function isSettled(db, inFlight, id) {
   const current = row(db, Number(id));
   if (!current) return false;
