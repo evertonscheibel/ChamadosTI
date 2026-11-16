@@ -111,18 +111,23 @@ export async function query(table, fields, filters = [], product = "rubi") {
       throw error("A integração exige conexão HTTPS.", 503);
     const xml = `<?xml version="1.0" encoding="UTF-8"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="http://services.senior.com.br"><soapenv:Header/><soapenv:Body><ser:ConsultarTabelas><user>${escape(config.user)}</user><password>${escape(config.password)}</password><encryption>${escape(config.encryption)}</encryption><parameters><consulta><id>central</id><tabela>${table}</tabela><campos>${fields.join(",")}</campos>${filters.map(([campo, condicao, valor]) => `<filtro><campo>${campo}</campo><condicao>${escape(condicao)}</condicao><valor>${escape(valor)}</valor></filtro>`).join("")}</consulta></parameters></ser:ConsultarTabelas></soapenv:Body></soapenv:Envelope>`;
     let response;
-    try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "text/xml; charset=utf-8", SOAPAction: "" },
-        body: xml,
-        signal: AbortSignal.timeout(30000),
-      });
-    } catch {
-      throw error(
-        "Não foi possível conectar à Senior. Tente novamente mais tarde.",
-        503,
-      );
+    // Falha de conexão momentânea: tenta mais uma vez antes de desistir.
+    for (let attempt = 1; !response; attempt++) {
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "text/xml; charset=utf-8", SOAPAction: "" },
+          body: xml,
+          signal: AbortSignal.timeout(30000),
+        });
+      } catch {
+        if (attempt >= 2)
+          throw error(
+            "Não foi possível conectar à Senior. Tente novamente mais tarde.",
+            503,
+          );
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
     }
     if (!response.ok) throw error("A Senior recusou a consulta.", 502);
     const chunks = [];

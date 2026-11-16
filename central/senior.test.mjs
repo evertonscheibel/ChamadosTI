@@ -142,3 +142,20 @@ test("the payroll event catalog is fetched once per code, not once per event row
     ["R008EVC"],
   );
 });
+
+test("query tenta de novo uma vez quando a conexão com a Senior falha", async () => {
+  const { query } = await import("./senior.mjs");
+  const original = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls++;
+    if (calls === 1) throw new TypeError("fetch failed");
+    return new Response("<x/>", { status: 500 });
+  };
+  try {
+    await assert.rejects(() => query("R034FUN", ["NUMEMP"]), /recusou/);
+    assert.equal(calls, 2);
+  } finally {
+    global.fetch = original;
+  }
+});
