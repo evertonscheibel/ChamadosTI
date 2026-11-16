@@ -262,3 +262,10 @@ test("chamado concluído ou sem prazo fica sem prioridade no Chatwoot", () => {
   assert.equal(semPrazo.priority, null);
   assert.equal(semPrazo.attributes.chamado_prazo, "sem prazo");
 });
+
+test("pedir atendente no menu vira 'outros assuntos', sem passar na frente de um assunto citado", () => {
+  assert.equal(parseOption("atendente"), 0);
+  assert.equal(parseOption("quero falar com uma pessoa"), 0);
+  assert.equal(parseOption("atendente sobre férias"), 8);
+  assert.equal(parseOption("3"), 3);
+});

@@ -220,7 +220,8 @@ export const THEMES = {
        ask: ["seu **nome completo** e **telefone**", "a **vaga ou área** de interesse", "o **currículo** em PDF ou foto, se tiver (pode ser na mensagem seguinte)"] },
   15: { serviceId: "outros", title: "Empresa parceira / fornecedor", words: ["fornecedor", "parceira", "parceiro", "operadora", "corretora"],
        ask: ["o **nome da empresa** e o **seu nome**", "o **assunto** (plano de saúde, recrutamento, exames, cobrança…)", "se for sobre um colaborador, o **nome dele**"] },
-  0: { serviceId: "outros", title: "Outros assuntos", words: [],
+  // Pedir uma pessoa vira chamado de "outros assuntos" (o RH responde por aqui).
+  0: { serviceId: "outros", title: "Outros assuntos", words: ["atendente", "falar com alguém", "falar com alguem", "falar com uma pessoa", "humano"],
        ask: ["seu **nome completo** e **setor**", "a sua **dúvida ou solicitação**"] },
 };
 const keycap = (n) => (n === 10 ? "🔟" : [...String(n)].map((d) => `${d}️⃣`).join(""));
@@ -337,8 +338,9 @@ export function parseOption(text) {
   const t = String(text || "").toLowerCase().trim();
   const m = /^(?:op[cç][aã]o\s*)?(\d{1,2})\s*[.)-]?$/.exec(t);
   if (m) return THEMES[Number(m[1])] ? Number(m[1]) : null;
-  for (const [n, theme] of Object.entries(THEMES))
-    if (theme.words.some((w) => t.includes(w))) return Number(n);
+  // "Outros assuntos" (0) por último: "atendente sobre férias" é férias.
+  const order = Object.keys(THEMES).map(Number).sort((a, b) => (a === 0) - (b === 0) || a - b);
+  for (const n of order) if (THEMES[n].words.some((w) => t.includes(w))) return n;
   return null;
 }
 

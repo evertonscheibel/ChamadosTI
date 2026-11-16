@@ -882,6 +882,8 @@ async function processWhatsappRh(payload, config) {
       saveWhatsappState(conversationId, step.state, phone, null);
     });
     await sendChatwootMessage(conversationId, ratingThanksText(step.rate));
+    // A nota reabre a conversa no Chatwoot; o atendimento já terminou, então volta a resolvida.
+    await resolveConversation(conversationId);
     return;
   }
   if (step.identity) {

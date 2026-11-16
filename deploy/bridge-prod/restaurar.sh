@@ -52,6 +52,9 @@ if [ "$MODE" = final ]; then
   for i in $(seq 1 60); do curl -fsS -H "X-Api-Key: $KEY" http://127.0.0.1:3102/api/sessions >/dev/null 2>&1 && break; sleep 2; done
   curl -fsS -X POST -H "X-Api-Key: $KEY" -H 'Content-Type: application/json' --data @"$IN/waha-app.json" http://127.0.0.1:3102/api/apps >/dev/null \
     || curl -fsS -X PUT -H "X-Api-Key: $KEY" -H 'Content-Type: application/json' --data @"$IN/waha-app.json" "http://127.0.0.1:3102/api/apps/$(sed -E 's/.*"id":"([^"]+)".*/\1/' "$IN/waha-app.json")" >/dev/null
+  # A central de ensaio (fora do compose) ocupa a porta 45874 e o nome "central" na rede:
+  # sai antes de a central de produção subir, com avisos, recuperação e vigia ligados.
+  docker rm -f frizelo-rh-central-ensaio >/dev/null 2>&1 || true
   dc up -d central
 else
   echo "== Central em modo ensaio (sem avisos, sem recuperação, sem vigia do WhatsApp)"
