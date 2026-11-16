@@ -61,6 +61,8 @@ import {
   listConversationMessages,
   escalateToHuman,
   syncTicket,
+  addPrivateNote,
+  conversationStatus,
 } from "./chatwoot-client.mjs";
 import { recoverMissed } from "./whatsapp-recovery.mjs";
 import { claimMessage, isSettled, hold, runTracked, rescueStuck, deliveryStats } from "./whatsapp-delivery.mjs";
@@ -93,6 +95,11 @@ import {
   awaitingReminderText,
   firstResponseStatus,
   chatwootTicket,
+  ackText,
+  goodbyeText,
+  cancelConfirmText,
+  keptText,
+  cancelledText,
 } from "./whatsapp-rh.mjs";
 import { holeritePdf, espelhoPdf } from "./senior-documents.mjs";
 import { situationNames } from "./senior.mjs";
@@ -903,9 +910,49 @@ async function processWhatsappRh(payload, config) {
     await sendChatwootMessage(conversationId, await deliverWhatsappDocument(conversationId, step, phone));
     return;
   }
-  if (step.remind && row?.request_id) {
-    const { protocol } = db.prepare("SELECT protocol FROM requests WHERE id=?").get(row.request_id);
-    await sendChatwootMessage(conversationId, ticketOpenReminderText(protocol));
+  if (step.goodbye) {
+    // "obrigado" depois de encerrado: despedida e a conversa (reaberta pela mensagem) volta a resolvida.
+    saveWhatsappState(conversationId, step.state, phone);
+    await sendChatwootMessage(conversationId, goodbyeText);
+    await resolveConversation(conversationId);
+    return;
+  }
+  const protocol = row?.request_id ? db.prepare("SELECT protocol FROM requests WHERE id=?").get(row.request_id)?.protocol : null;
+  if (protocol && (step.remind || step.ack || step.silent || step.confirmCancel || step.kept)) {
+    saveWhatsappState(conversationId, step.state, phone);
+    if (step.remind) await sendChatwootMessage(conversationId, ticketOpenReminderText(protocol));
+    if (step.ack) await sendChatwootMessage(conversationId, ackText(protocol));
+    if (step.confirmCancel) await sendChatwootMessage(conversationId, cancelConfirmText(protocol));
+    if (step.kept) await sendChatwootMessage(conversationId, keptText(protocol));
+    return;
+  }
+  if (step.cancel && row?.request_id) {
+    const cancelled = transaction(() => {
+      const request = db.prepare("SELECT id,protocol,status,due_at,user_id FROM requests WHERE id=?").get(row.request_id);
+      if (!request || request.status === "Concluída") return null;
+      const owner = db.prepare("SELECT id,name FROM users WHERE id=?").get(request.user_id);
+      const now = new Date().toISOString();
+      db.prepare("UPDATE requests SET status='Concluída',closed_at=?,closed_due_at=?,updated_at=? WHERE id=?").run(
+        now, request.due_at ?? null, now, request.id,
+      );
+      history(request.id, owner, "Chamado cancelado pelo colaborador (WhatsApp)", "status", {
+        from: request.status,
+        to: "Concluída",
+        cancelado: true,
+      });
+      saveWhatsappState(conversationId, step.state, phone);
+      return request;
+    });
+    if (!cancelled) {
+      saveWhatsappState(conversationId, step.state, phone);
+      return;
+    }
+    await sendChatwootMessage(conversationId, cancelledText(cancelled.protocol));
+    await addPrivateNote(conversationId, `O colaborador cancelou o chamado ${cancelled.protocol} pelo WhatsApp.`).catch((e) =>
+      console.error(`Nota do cancelamento ${cancelled.protocol}:`, e.message),
+    );
+    syncChatwootTicket(cancelled.id);
+    await resolveConversation(conversationId);
     return;
   }
   if (step.append || step.open) {
@@ -1000,6 +1047,58 @@ function enqueueWhatsapp(payload, config) {
 }
 const recoveryState = { enabled: false, lastRun: null, lastRecovered: 0, lastRescued: 0, lastError: null };
 /** Busca no Chatwoot o que chegou enquanto a central estava fora (no início e a cada 5 min). */
+/**
+ * Conversa parada há 24 h sem chamado (no menu, no meio do assunto, no holerite...)
+ * volta ao início e é resolvida no Chatwoot, para não acumular pendentes. Só mexe
+ * em conversa que está com o bot ("pending"): se uma atendente assumiu, fica como está.
+ * Pesquisa sem nota e confirmação de cancelamento sem resposta também expiram.
+ */
+async function closeIdleWhatsapp(now = Date.now()) {
+  const limit = new Date(now - 24 * 3600000).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT w.conversation_id,w.stage,w.request_id,r.status request_status FROM whatsapp_rh w
+       LEFT JOIN requests r ON r.id=w.request_id
+       WHERE w.stage NOT IN ('chamado','encerrado') AND w.updated_at<?`,
+    )
+    .all(limit);
+  let closed = 0;
+  for (const row of rows) {
+    const set = (stage) =>
+      db.prepare("UPDATE whatsapp_rh SET stage=?,data='{}',updated_at=? WHERE conversation_id=? AND stage=?").run(
+        stage,
+        new Date(now).toISOString(),
+        row.conversation_id,
+        row.stage,
+      );
+    const ticketOpen = row.request_id && row.request_status && row.request_status !== "Concluída";
+    // Saiu do chamado para outro assunto (ou pediu para cancelar) e parou: volta ao chamado, que segue com o RH.
+    if (ticketOpen) {
+      set("chamado");
+      continue;
+    }
+    if (row.stage === "pesquisa") {
+      set("encerrado");
+      continue;
+    }
+    try {
+      const status = await conversationStatus(row.conversation_id);
+      if (status === "pending") await resolveConversation(row.conversation_id);
+      if (status === "pending" || status === "resolved") {
+        set("encerrado");
+        closed++;
+      }
+    } catch (e) {
+      if (e.chatwootStatus === 404) set("encerrado");
+      else {
+        console.error("Conversas paradas:", e.message);
+        break; // Chatwoot fora: tenta na próxima volta
+      }
+    }
+  }
+  if (closed) console.log(`[whatsapp] ${closed} conversa(s) parada(s) há 24 h encerrada(s).`);
+}
+
 async function recoverWhatsapp() {
   const chatwoot = chatwootConfiguration();
   recoveryState.enabled = Boolean(chatwoot.enabled && chatwoot.apiToken);
@@ -1542,20 +1641,27 @@ http
           // Conversa do WhatsApp RH resolvida no Chatwoot: o chamado é concluído e o colaborador avisado.
           const whatsappOpen = db.prepare("SELECT 1 FROM whatsapp_rh WHERE conversation_id=?").get(String(payload.id))
             ? db
-                .prepare("SELECT protocol,chatwoot_conversation_id FROM requests WHERE chatwoot_conversation_id=? AND status<>'Concluída'")
+                .prepare("SELECT id,protocol,chatwoot_conversation_id FROM requests WHERE chatwoot_conversation_id=? AND status<>'Concluída'")
                 .all(String(payload.id))
             : [];
+          const waRow = db.prepare("SELECT request_id,stage FROM whatsapp_rh WHERE conversation_id=?").get(String(payload.id));
           transaction(() =>
             closeFromChatwoot(db, history, payload.id, payload.meta?.assignee?.name),
           );
-          for (const request of whatsappOpen) {
-            db.prepare("UPDATE whatsapp_rh SET stage='encerrado',updated_at=? WHERE conversation_id=?").run(
+          // Pede a nota do chamado em que o colaborador estava (como na conclusão pela central).
+          const surveyId = ["chamado", "cancelar"].includes(waRow?.stage) ? waRow.request_id : null;
+          if (whatsappOpen.length)
+            db.prepare("UPDATE whatsapp_rh SET stage=?,updated_at=? WHERE conversation_id=?").run(
+              whatsappOpen.some((r) => r.id === surveyId) ? "pesquisa" : "encerrado",
               new Date().toISOString(),
               String(payload.id),
             );
-            await sendChatwootMessage(payload.id, ticketClosedText(request.protocol)).catch((e) =>
+          for (const request of whatsappOpen) {
+            const survey = request.id === surveyId;
+            await sendChatwootMessage(payload.id, ticketClosedText(request.protocol, { survey })).catch((e) =>
               console.error(`WhatsApp RH conversa ${payload.id}:`, e.message),
             );
+            syncChatwootTicket(request.id);
           }
           return json(res, 200, { ok: true, mirrored: true });
         }
@@ -2474,6 +2580,10 @@ if (process.env.CENTRAL_AVISOS !== "off") {
   setTimeout(() => void automaticAlerts().catch((e) => console.error("Avisos automáticos:", e.message)), 20000).unref?.();
   // Respostas do RH que não saíram no WhatsApp: tenta de novo a cada minuto.
   setInterval(() => void retryWhatsappDeliveries().catch((e) => console.error("Reenvio WhatsApp:", e.message)), 60000).unref?.();
+  // Conversas paradas há 24 h sem chamado: encerra (de hora em hora).
+  const runIdleClose = () => void closeIdleWhatsapp().catch((e) => console.error("Conversas paradas:", e.message));
+  setInterval(runIdleClose, 3600000).unref?.();
+  setTimeout(runIdleClose, 60000).unref?.();
   // Recupera mensagens do WhatsApp perdidas enquanto a central esteve fora.
   setTimeout(() => void recoverWhatsapp(), 8000).unref?.();
   setInterval(() => void recoverWhatsapp(), 5 * 60000).unref?.();

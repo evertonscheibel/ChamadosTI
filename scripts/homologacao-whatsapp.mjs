@@ -46,8 +46,16 @@ async function cw(path, method = "GET", body) {
   return r.json().catch(() => null);
 }
 async function newConversation(label) {
-  const phone = `+5500${TRECHO}${String(Math.floor(Math.random() * 90) + 10)}`;
-  const c = await cw("/contacts", "POST", { inbox_id: INBOX, name: `Homologação ${label}`, phone_number: phone });
+  // DDD 00 + trecho de teste + 3 dígitos (15 no total, o máximo do padrão); sorteia de novo se já existir.
+  let phone, c;
+  for (let attempt = 0; !c; attempt++) {
+    phone = `+5500${TRECHO}${String(Math.floor(Math.random() * 1000)).padStart(3, "0")}`;
+    try {
+      c = await cw("/contacts", "POST", { inbox_id: INBOX, name: `Homologação ${label}`, phone_number: phone });
+    } catch (e) {
+      if (attempt >= 5 || !/already been taken/.test(e.message)) throw e;
+    }
+  }
   const contact = c.payload.contact;
   const sourceId = c.payload.contact_inbox?.source_id || contact.contact_inboxes?.[0]?.source_id;
   const conv = await cw("/conversations", "POST", { inbox_id: INBOX, contact_id: contact.id, source_id: sourceId });
@@ -208,11 +216,93 @@ async function telefoneForaDoTeste() {
   await cw(`/conversations/${conv.id}/toggle_status`, "POST", { status: "resolved" });
 }
 
+/** Abre um chamado de teste e devolve { conv, request, protocol }. */
+async function openTicket(label) {
+  const conv = await newConversation(label);
+  await say(conv, "oi");
+  await say(conv, "3");
+  const r = await say(conv, `Teste Homologação (${label}), setor TI. Dia 10/11 sem batida.`);
+  const protocol = r.join(" ").match(/FRZ-\d{4}-\d{6}/)?.[0];
+  const request = await waitFor(() => requestOf(conv));
+  return { conv, request, protocol };
+}
+const quiet = async (conv, ms = 6000) => (await newReplies(conv, ms)).length === 0;
+
+async function okSemRepetir() {
+  current = "'ok/obrigado' com chamado aberto";
+  console.log(`\n${current}`);
+  const { conv, request, protocol } = await openTicket("ok");
+  let r = await say(conv, "ok");
+  check("'ok' recebe confirmação curta", r.length === 1 && r[0].includes("Combinado") && r[0].includes(protocol), r.join(" | "));
+  await say(conv, "obrigado!", { expect: false });
+  check("'obrigado' logo depois não repete nada", await quiet(conv));
+  const d = await central(`/api/requests/${request.id}`);
+  check("'ok/obrigado' não entram no chamado", !d.messages.some((m) => /^(ok|obrigado!)$/.test(m.body)));
+  r = await say(conv, "ok, mas esqueci: foi na portaria 2", { expect: false });
+  const appended = await waitFor(async () =>
+    (await central(`/api/requests/${request.id}`)).messages.some((m) => m.body.includes("portaria 2")) ? true : null,
+  );
+  check("frase com conteúdo entra no chamado", appended);
+  await central(`/api/requests/${request.id}/messages`, "POST", { body: "Resolvido na homologação." });
+  await central(`/api/requests/${request.id}`, "PATCH", { status: "Concluída" });
+  await newReplies(conv);
+  r = await say(conv, "obrigada");
+  check("'obrigada' na hora da nota é despedida, sem menu", r.some((t) => t.includes("Por nada")) && !r.some((t) => t.includes("Responda com o **número**")), r.join(" | "));
+  const resolved = await waitFor(async () => ((await conversation(conv)).status === "resolved" ? true : null));
+  check("conversa continua resolvida", resolved);
+}
+
+async function cancelarPeloColaborador() {
+  current = "Colaborador cancela o chamado";
+  console.log(`\n${current}`);
+  const { conv, request, protocol } = await openTicket("cancelar");
+  let r = await say(conv, "cancelar");
+  check("'cancelar' pede confirmação", r.some((t) => t.includes("Quer **cancelar**") && t.includes(protocol)), r.join(" | "));
+  r = await say(conv, "não");
+  check("'não' mantém o chamado", r.some((t) => t.includes("continua aberto")), r.join(" | "));
+  check("chamado segue aberto", (await requestOf(conv))?.status !== "Concluída");
+  await say(conv, "encerrar chamado");
+  r = await say(conv, "sim");
+  check("'sim' cancela e avisa", r.some((t) => t.includes("cancelado")), r.join(" | "));
+  const done = await waitFor(async () => {
+    const d = await central(`/api/requests/${request.id}`);
+    return d.request?.status === "Concluída" && d.history.some((h) => h.event?.includes("cancelado pelo colaborador")) ? true : null;
+  });
+  check("chamado concluído como cancelado na central", done);
+  const note = await waitFor(async () =>
+    (await messages(conv)).some((m) => m.private && m.content?.includes("cancelou o chamado")) ? true : null,
+  );
+  check("RH recebe nota interna no Chatwoot", note);
+  const resolved = await waitFor(async () => {
+    const c = await conversation(conv);
+    return c.status === "resolved" && c.custom_attributes?.chamado_status === "Concluída" && !c.priority ? true : null;
+  });
+  check("conversa resolvida, chamado concluído e sem prioridade no Chatwoot", resolved);
+}
+
+async function notaPeloChatwoot() {
+  current = "Atendente resolve pelo Chatwoot";
+  console.log(`\n${current}`);
+  const { conv, request } = await openTicket("chatwoot");
+  await cw(`/conversations/${conv.id}/messages`, "POST", { content: "Pronto, ajustei seu ponto (homologação).", message_type: "outgoing" });
+  await newReplies(conv);
+  await cw(`/conversations/${conv.id}/toggle_status`, "POST", { status: "resolved" });
+  const r = await newReplies(conv);
+  check("colaborador recebe 'atendido' com pedido de nota", r.some((t) => t.includes("foi atendido") && t.includes("nota")), r.join(" | "));
+  const concluded = await waitFor(async () => ((await requestOf(conv))?.status === "Concluída" ? true : null));
+  check("chamado concluído na central", concluded);
+  await say(conv, "4");
+  const rated = await waitFor(async () => ((await central(`/api/requests/${request.id}`)).request?.rating === 4 ? true : null));
+  check("nota gravada", rated);
+  const resolved = await waitFor(async () => ((await conversation(conv)).status === "resolved" ? true : null));
+  check("conversa volta a resolvida depois da nota", resolved);
+}
+
 // --- Execução ----------------------------------------------------------------------
 const started = Date.now();
 await central("/api/login", "POST", RH);
 console.log(`Central ${CENTRAL} · Chatwoot ${CW} · caixa ${INBOX}`);
-for (const scenario of [chamadoCompleto, pedirAtendente, statusSemChamado, telefoneForaDoTeste]) {
+for (const scenario of [chamadoCompleto, pedirAtendente, statusSemChamado, telefoneForaDoTeste, okSemRepetir, cancelarPeloColaborador, notaPeloChatwoot]) {
   try {
     await scenario();
   } catch (e) {

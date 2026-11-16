@@ -157,8 +157,8 @@ test("CPF, nome e mês", () => {
 test("com chamado aberto: 'menu' abre outro assunto e 'oi' recebe lembrete", () => {
   const state = { stage: "chamado", theme: 8, data: {} };
   assert.equal(nextStep(state, "menu").state.stage, "menu");
-  assert.deepEqual(nextStep(state, "oi"), { state, remind: true });
-  assert.deepEqual(nextStep(state, "Olá!"), { state, remind: true });
+  assert.equal(nextStep(state, "oi").remind, true);
+  assert.equal(nextStep(state, "Olá!").remind, true);
   assert.deepEqual(nextStep(state, "segue meu currículo atualizado"), { state, append: true });
   assert.deepEqual(nextStep(state, "oi", { hasAttachment: true }), { state, append: true });
 });
@@ -268,4 +268,59 @@ test("pedir atendente no menu vira 'outros assuntos', sem passar na frente de um
   assert.equal(parseOption("quero falar com uma pessoa"), 0);
   assert.equal(parseOption("atendente sobre férias"), 8);
   assert.equal(parseOption("3"), 3);
+});
+
+test("com chamado aberto, 'ok/obrigado' recebe confirmação curta no máximo 1 vez por hora", () => {
+  const t0 = ms("2026-11-16T15:00:00.000Z");
+  const chamado = { stage: "chamado", theme: 3, invalid: 0, data: {} };
+  const a = nextStep(chamado, "ok", { now: t0 });
+  assert.equal(a.ack, true);
+  assert.ok(!a.append && !a.remind);
+  const b = nextStep(a.state, "obrigado!", { now: t0 + 60000 });
+  assert.equal(b.silent, true, "segundo 'obrigado' em menos de 1 h não responde");
+  assert.equal(nextStep(b.state, "👍", { now: t0 + 2 * 3600000 }).ack, true);
+  assert.equal(nextStep(chamado, "ok, muito obrigado 🙏", { now: t0 }).ack, true);
+  assert.equal(nextStep(chamado, "ok, mas faltou o dia 11", { now: t0 }).append, true, "frase com conteúdo entra no chamado");
+});
+
+test("cumprimento com chamado aberto: lembrete completo 1 vez por dia, depois confirmação curta", () => {
+  const t0 = ms("2026-11-16T15:00:00.000Z");
+  const a = nextStep({ stage: "chamado", data: {} }, "oi", { now: t0 });
+  assert.equal(a.remind, true);
+  const b = nextStep(a.state, "bom dia", { now: t0 + 3600000 });
+  assert.equal(b.ack, true);
+  assert.equal(nextStep(b.state, "oi", { now: t0 + 25 * 3600000 }).remind, true);
+});
+
+test("'obrigado' depois de encerrado ou na pesquisa é despedida, sem menu", () => {
+  for (const stage of ["encerrado", "pesquisa"]) {
+    const r = nextStep({ stage, data: {} }, "obrigada");
+    assert.equal(r.goodbye, true, stage);
+    assert.equal(r.state.stage, "encerrado");
+    assert.equal(r.reply, undefined);
+  }
+  assert.equal(nextStep({ stage: "pesquisa", data: {} }, "5").rate, 5);
+  assert.match(nextStep({ stage: "encerrado", data: {} }, "preciso de ajuda").reply, /Responda com o \*\*número\*\*/);
+});
+
+test("'ok' no meio do assunto não vira chamado", () => {
+  const r = nextStep({ stage: "tema", theme: 3, data: {} }, "ok");
+  assert.ok(!r.open);
+  assert.match(r.reply, /Para eu registrar/);
+});
+
+test("colaborador cancela o chamado com confirmação", () => {
+  const chamado = { stage: "chamado", theme: 3, invalid: 0, data: {} };
+  const ask = nextStep(chamado, "cancelar chamado");
+  assert.equal(ask.confirmCancel, true);
+  assert.equal(ask.state.stage, "cancelar");
+  const yes = nextStep(ask.state, "sim");
+  assert.equal(yes.cancel, true);
+  assert.equal(yes.state.stage, "encerrado");
+  const no = nextStep(ask.state, "não");
+  assert.equal(no.kept, true);
+  assert.equal(no.state.stage, "chamado");
+  const other = nextStep(ask.state, "na verdade quero mandar o atestado");
+  assert.equal(other.append, true);
+  assert.equal(other.state.stage, "chamado");
 });

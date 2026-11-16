@@ -152,6 +152,20 @@ export async function syncTicket(conversationId, { attributes, priority }) {
   await conversationApi(conversationId, "/toggle_priority", "POST", { priority });
 }
 
+/** Nota interna (só a equipe vê) na conversa. */
+export function addPrivateNote(conversationId, content) {
+  return conversationApi(conversationId, "/messages", "POST", {
+    content,
+    message_type: "outgoing",
+    private: true,
+  });
+}
+
+/** Status atual da conversa no Chatwoot ("open", "pending", "resolved", "snoozed"). */
+export async function conversationStatus(conversationId) {
+  return (await conversationApi(conversationId, "", "GET"))?.status ?? null;
+}
+
 /** Tira a conversa do bot ("open"), o que a coloca no rodízio das atendentes. */
 export function handToHuman(conversationId) {
   return conversationApi(conversationId, "/toggle_status", "POST", {

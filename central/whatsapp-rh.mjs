@@ -330,7 +330,31 @@ export function statusText(requests) {
   ].join("\n");
 }
 
-const GREETING = /^(oi+|ol[aá]|opa|e a[ií]|bom dia|boa tarde|boa noite|ok|tudo bem\??)[!.,\s]*$/i;
+// --- Encerramento ------------------------------------------------------------
+export function ackText(protocol) {
+  return `Combinado! 👍 Seu **chamado nº ${protocol}** continua com o RH, e a resposta vem por aqui.`;
+}
+export const goodbyeText = "Por nada! 🙂 Se precisar de algo, é só mandar uma mensagem por aqui.";
+export function cancelConfirmText(protocol) {
+  return `Quer **cancelar** o chamado nº ${protocol}?\nResponda **sim** para cancelar, ou **não** para manter o chamado aberto com o RH.`;
+}
+export function keptText(protocol) {
+  return `Certo, o **chamado nº ${protocol}** continua aberto com o RH. 👍`;
+}
+export function cancelledText(protocol) {
+  return `Chamado nº ${protocol} **cancelado**. ✅\nSe precisar de algo, é só mandar uma nova mensagem por aqui.\n${SIGNATURE}`;
+}
+/** Lembrete completo do chamado: no máximo 1 por dia; confirmação curta: no máximo 1 por hora. */
+export const REMIND_EVERY = 24 * 3600000;
+export const ACK_EVERY = 3600000;
+
+const GREETING = /^(oi+|ol[aá]|opa|e a[ií]|bom dia|boa tarde|boa noite|tudo bem\??)[!.,\s]*$/i;
+// "ok", "obrigado", "valeu", 👍… (até três juntos: "ok, obrigado!"): fim de conversa, não é pedido novo.
+const THANKS_TOKEN = "(?:ok(?:ay|ey)?|okk+|obrigad[oa]s?|muito obrigad[oa]|obg|brigad[oa]|valeu|vlw|certo|beleza|blz|show|combinado|perfeito|entendi|t[aá] bom|tudo certo|agrade[cç]o|grat[oa]|👍|🙏|👌|😊|🙂|😉|🤝)";
+const THANKS = new RegExp(`^(?:${THANKS_TOKEN}[!.,\\s]*){1,3}$`, "iu");
+const CANCEL_WORD = /^(cancelar|cancela|encerrar|encerra|finalizar)( (o |meu )?chamado)?[!.\s]*$/i;
+const YES = /^(sim|s|pode|pode cancelar|confirmo|isso)[!.\s]*$/i;
+const NO = /^(n[aã]o|nao|n)[!.\s]*$/i;
 const STATUS_WORD = /^(status|situa[cç][aã]o|meus chamados|chamados?|consultar( meus)? chamados?|acompanhar( chamado)?)[!.?\s]*$/i;
 
 /** "1", "2.", "10)", "opção 3" ou uma palavra do assunto -> número da opção (ou null). */
@@ -415,10 +439,14 @@ const MENU_WORD = /^(menu|in[ií]cio|voltar|sair)$/i;
  * `identity: true` deixa o servidor pular a identificação já confirmada. Também:
  * { status: true } (listar os chamados) e { rate: 1..5 } (pesquisa de satisfação).
  */
-export function nextStep(state, text, { hasAttachment = false } = {}) {
+export function nextStep(state, text, { hasAttachment = false, now = Date.now() } = {}) {
   const stage = state?.stage || null;
   const data = state?.data || {};
   const trimmed = String(text || "").trim();
+  const thanks = !hasAttachment && THANKS.test(trimmed);
+  const closed = { stage: "encerrado", theme: null, invalid: 0, data: {} };
+  // "obrigado" depois de encerrado (ou em vez da nota): despedida, sem mandar o menu de novo.
+  if (thanks && (stage === "encerrado" || stage === "pesquisa")) return { state: closed, goodbye: true };
   const toMenu = () => ({ state: { stage: "menu", theme: null, invalid: 0, data: {} }, reply: menuText() });
   // "status" funciona em qualquer ponto da conversa (menos no meio dos dados pessoais).
   if (!hasAttachment && STATUS_WORD.test(trimmed) && !["doc_cpf", "doc_matricula", "doc_nome"].includes(stage))
@@ -463,13 +491,28 @@ export function nextStep(state, text, { hasAttachment = false } = {}) {
   if (stage === "tema") {
     if (!trimmed && !hasAttachment) return { state };
     // Um cumprimento solto não são os dados do chamado: repete o pedido.
-    if (!hasAttachment && GREETING.test(trimmed))
+    if (!hasAttachment && (GREETING.test(trimmed) || thanks))
       return { state, reply: `Para eu registrar o seu chamado, ${askText(state.theme ?? 0).replace(/^Certo, /, "sobre ")}` };
     return { state: { ...state, stage: "chamado", data: {} }, open: true };
   }
+  // Confirmação do cancelamento pedido pelo colaborador.
+  if (stage === "cancelar") {
+    const back = { ...state, stage: "chamado" };
+    if (!hasAttachment && YES.test(trimmed)) return { state: closed, cancel: true };
+    if (!hasAttachment && NO.test(trimmed)) return { state: back, kept: true };
+    return { state: back, append: true }; // escreveu outra coisa: entra no chamado
+  }
   // Chamado em andamento: "menu" abre outro assunto (o chamado continua aberto com o RH);
-  // cumprimento sozinho não entra no chamado, só lembra que ele está aberto.
+  // "cancelar" pede confirmação; cumprimento e "ok/obrigado" não entram no chamado.
   if (!hasAttachment && MENU_WORD.test(trimmed)) return toMenu();
-  if (!hasAttachment && GREETING.test(trimmed)) return { state, remind: true };
+  if (!hasAttachment && CANCEL_WORD.test(trimmed)) return { state: { ...state, stage: "cancelar" }, confirmCancel: true };
+  if (!hasAttachment && (GREETING.test(trimmed) || thanks)) {
+    const at = new Date(now).toISOString();
+    const since = (key) => now - (Date.parse(data[key] || "") || 0);
+    // Cumprimento: lembrete completo no máximo 1 vez por dia; senão, confirmação curta (no máximo 1 por hora).
+    if (!thanks && since("remindedAt") >= REMIND_EVERY) return { state: { ...state, data: { ...data, remindedAt: at } }, remind: true };
+    if (since("ackedAt") >= ACK_EVERY) return { state: { ...state, data: { ...data, ackedAt: at } }, ack: true };
+    return { state, silent: true };
+  }
   return { state, append: true };
 }
