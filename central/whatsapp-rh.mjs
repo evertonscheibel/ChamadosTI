@@ -339,6 +339,13 @@ export function statusText(requests) {
   ].join("\n");
 }
 
+/** Áudio na hora de digitar CPF, matrícula, nome ou mês. */
+export function audioNotHereText(stage) {
+  const what = { doc_cpf: "o seu **CPF** (só os números)", doc_matricula: "a sua **matrícula**", doc_nome: "o seu **nome completo**", doc_mes: "o **mês** (ex.: 10/2026)" }[stage] || "a resposta";
+  return `Recebi o áudio, mas nesta etapa preciso que você **digite** ${what}. 🙂
+Se preferir falar com o RH, envie **menu** e escolha uma opção de **Falar com o RH** (lá pode mandar áudio).`;
+}
+
 // --- Encerramento ------------------------------------------------------------
 export function ackText(protocol) {
   return `Combinado! 👍 Seu **chamado nº ${protocol}** continua com o RH, e a resposta vem por aqui.`;
@@ -448,7 +455,7 @@ const MENU_WORD = /^(menu|in[ií]cio|voltar|sair)$/i;
  * `identity: true` deixa o servidor pular a identificação já confirmada. Também:
  * { status: true } (listar os chamados) e { rate: 1..5 } (pesquisa de satisfação).
  */
-export function nextStep(state, text, { hasAttachment = false, now = Date.now() } = {}) {
+export function nextStep(state, text, { hasAttachment = false, hasAudio = false, now = Date.now() } = {}) {
   const stage = state?.stage || null;
   const data = state?.data || {};
   const trimmed = String(text || "").trim();
@@ -463,8 +470,14 @@ export function nextStep(state, text, { hasAttachment = false, now = Date.now() 
   if (stage === "pesquisa") {
     const rating = /^\s*([1-5])(?:\s*(?:estrelas?|\/\s*5))?[!.\s]*$/i.exec(trimmed)?.[1];
     if (rating) return { state: { stage: "encerrado", theme: null, invalid: 0, data: {} }, rate: Number(rating) };
-    return toMenu();
+    if (!hasAudio || trimmed) return toMenu();
   }
+  // Áudio (sem texto) no começo, no menu ou depois de encerrado: a pessoa já está explicando
+  // o pedido, então vira chamado de "outros assuntos" com o áudio, para o RH ouvir.
+  if (hasAudio && !trimmed && (!stage || ["menu", "encerrado", "pesquisa", "doc_opcao"].includes(stage)))
+    return { state: { stage: "chamado", theme: 0, invalid: 0, data: {} }, open: true };
+  // Nos dados pessoais e no mês, o bot precisa de texto.
+  if (hasAudio && !trimmed && stage?.startsWith("doc_")) return { state, reply: audioNotHereText(stage) };
   if (!stage || stage === "encerrado" || stage === "doc_opcao" || (stage.startsWith("doc_") && MENU_WORD.test(trimmed))) return toMenu();
   if (stage === "menu") {
     let theme = parseOption(text);

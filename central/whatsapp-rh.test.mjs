@@ -332,3 +332,25 @@ test("vários chamados concluídos de uma vez viram uma mensagem só", () => {
   assert.match(t, /chamados nº \*\*FRZ-1\*\*, \*\*FRZ-2\*\* e \*\*FRZ-3\*\* foram atendidos/);
   assert.match(t, /nota de \*\*1\*\* a \*\*5\*\*/);
 });
+
+test("áudio no começo, no menu ou depois de encerrado vira chamado com o áudio", () => {
+  for (const state of [null, { stage: "menu", data: {} }, { stage: "encerrado", data: {} }, { stage: "pesquisa", data: {} }]) {
+    const r = nextStep(state, "", { hasAttachment: true, hasAudio: true });
+    assert.equal(r.open, true, state?.stage ?? "início");
+    assert.equal(r.state.theme, 0);
+  }
+  assert.equal(nextStep({ stage: "pesquisa", data: {} }, "5", { hasAttachment: false }).rate, 5);
+});
+
+test("áudio nos dados pessoais pede para digitar, sem perder a etapa", () => {
+  const state = { stage: "doc_cpf", theme: 1, data: { attempts: 0 } };
+  const r = nextStep(state, "", { hasAttachment: true, hasAudio: true });
+  assert.equal(r.state.stage, "doc_cpf");
+  assert.match(r.reply, /digite\*\* o seu \*\*CPF/);
+  assert.match(nextStep({ stage: "doc_mes", theme: 2, data: {} }, "", { hasAttachment: true, hasAudio: true }).reply, /mês/);
+});
+
+test("áudio no meio do chamado entra no chamado", () => {
+  assert.equal(nextStep({ stage: "chamado", data: {} }, "", { hasAttachment: true, hasAudio: true }).append, true);
+  assert.equal(nextStep({ stage: "tema", theme: 3, data: {} }, "", { hasAttachment: true, hasAudio: true }).open, true);
+});

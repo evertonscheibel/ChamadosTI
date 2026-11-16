@@ -758,6 +758,7 @@ async function whatsappFiles(attachments) {
       const kind = type.startsWith("audio/") ? "audio" : type.startsWith("video/") ? "video" : type.startsWith("image/") ? "imagem" : "arquivo";
       files.push({ name: `whatsapp-${kind}-${Date.now()}-${i + 1}.${WHATSAPP_TYPES[type]}`, type, content: file.content });
     } catch (e) {
+      console.warn(`[whatsapp] anexo ${a.file_type || "?"} não baixado: ${e.message}`);
       notes.push(
         e.status === 413
           ? `(${label[a.file_type] || "arquivo"} acima de 16 MB recebido no WhatsApp — veja a conversa no Chatwoot)`
@@ -867,7 +868,10 @@ async function processWhatsappRh(payload, config) {
     else if (concluded) state = { stage: "encerrado" };
   }
   if (state) state.data = JSON.parse(row.data || "{}");
-  const step = nextStep(state, text, { hasAttachment: attachments.length > 0 });
+  const step = nextStep(state, text, {
+    hasAttachment: attachments.length > 0,
+    hasAudio: attachments.some((a) => a.file_type === "audio"),
+  });
   if (step.status) {
     const digits = phone.replace(/\D/g, "");
     const since = new Date(Date.now() - 30 * 86400000).toISOString();
@@ -958,7 +962,10 @@ async function processWhatsappRh(payload, config) {
   }
   if (step.append || step.open) {
     const { files, notes } = await whatsappFiles(attachments);
-    const body = [text.trim(), ...notes].filter(Boolean).join("\n") || "(anexo enviado pelo WhatsApp)";
+    const onlyAudio = !text.trim() && files.length > 0 && files.every((f) => f.type.startsWith("audio/"));
+    const body =
+      [text.trim(), ...notes].filter(Boolean).join("\n") ||
+      (onlyAudio ? "🎤 Áudio enviado pelo WhatsApp (ouça no anexo)" : "(anexo enviado pelo WhatsApp)");
     if (step.append) {
       transaction(() => {
         const owner = db.prepare("SELECT u.id,u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?").get(row.request_id);

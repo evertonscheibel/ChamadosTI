@@ -141,3 +141,24 @@ test("erro do Chatwoot informa o código HTTP", async () => {
     global.fetch = originalFetch;
   }
 });
+
+test("downloadAttachment espera o arquivo ficar disponível (404 no começo)", async () => {
+  const { downloadAttachment } = await import("./chatwoot-client.mjs");
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async (url) => {
+    calls++;
+    assert.equal(String(url), "https://chatwoot.test/rails/active_storage/blobs/x/audio.ogg");
+    if (calls < 3) return new Response("", { status: 404 });
+    return new Response(new Uint8Array([79, 103, 103, 83]), { status: 200, headers: { "content-type": "audio/ogg" } });
+  };
+  try {
+    const f = await downloadAttachment("http://outro-host/rails/active_storage/blobs/x/audio.ogg", 1000, { waits: [1, 1, 1] });
+    assert.equal(f.type, "audio/ogg");
+    assert.equal(calls, 3);
+    calls = -10;
+    await assert.rejects(() => downloadAttachment("http://h/rails/active_storage/blobs/x/audio.ogg", 1000, { waits: [1] }), /indisponível \(404\)/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

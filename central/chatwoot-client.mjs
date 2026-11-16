@@ -207,12 +207,20 @@ export async function sendMessageWithFiles(conversationId, content, files) {
  * Baixa um anexo recebido. Só o caminho do data_url é usado, sempre contra o
  * endereço configurado do Chatwoot (nunca um host vindo do payload).
  */
-export async function downloadAttachment(dataUrl, maxBytes = 5 * 1024 * 1024) {
+export async function downloadAttachment(dataUrl, maxBytes = 5 * 1024 * 1024, { waits = [1000, 2000, 4000] } = {}) {
   const config = configuration();
   if (!config.enabled) throw error("Integração Chatwoot não configurada.", 503);
   const source = new URL(dataUrl);
   const target = new URL(source.pathname + source.search, config.base);
-  const response = await fetch(target, { signal: AbortSignal.timeout(30000) });
+  // O Chatwoot avisa da mensagem um instante antes de o arquivo ficar disponível:
+  // 404 logo de cara é normal, espera um pouco e tenta de novo.
+  let response;
+  for (let attempt = 0; ; attempt++) {
+    response = await fetch(target, { signal: AbortSignal.timeout(30000) });
+    if (response.status !== 404 || attempt >= waits.length) break;
+    await response.body?.cancel().catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, waits[attempt]));
+  }
   if (!response.ok) throw error(`Anexo indisponível (${response.status}).`, 502);
   const content = Buffer.from(await response.arrayBuffer());
   if (content.length > maxBytes) throw error("Anexo acima do limite.", 413);

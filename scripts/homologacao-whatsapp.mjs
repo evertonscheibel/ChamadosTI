@@ -340,11 +340,66 @@ async function variosChamados() {
   check("conversa resolvida no fim", resolved);
 }
 
+/** Colaborador manda um áudio (ogg/opus, como o WhatsApp). Arquivo em HOMOLOG_AUDIO. */
+async function sayAudio(conv) {
+  for (const m of await messages(conv)) conv.seen.add(m.id);
+  const form = new FormData();
+  form.append("message_type", "incoming");
+  form.append("attachments[]", new Blob([readFileSync(env.HOMOLOG_AUDIO)], { type: "audio/ogg" }), "audio.ogg");
+  const r = await fetch(`${CW}/conversations/${conv.id}/messages`, {
+    method: "POST",
+    headers: { api_access_token: env.CHATWOOT_API_TOKEN },
+    body: form,
+  });
+  if (!r.ok) throw new Error(`Chatwoot áudio: ${r.status} ${await r.text()}`);
+  return newReplies(conv);
+}
+
+async function audioDoColaborador() {
+  current = "Áudio do colaborador";
+  console.log(`\n${current}`);
+  if (!env.HOMOLOG_AUDIO) return check("arquivo de áudio de teste (HOMOLOG_AUDIO)", false, "defina HOMOLOG_AUDIO");
+  const conv = await newConversation("audio");
+  let r = await sayAudio(conv);
+  const protocol = r.join(" ").match(/FRZ-\d{4}-\d{6}/)?.[0];
+  check("áudio logo de cara abre chamado", protocol && r.some((t) => t.includes("Outros assuntos")), r.join(" | "));
+  const request = await waitFor(() => requestOf(conv));
+  const detail = request && (await central(`/api/requests/${request.id}`));
+  const audio = detail?.attachments.find((a) => a.type?.startsWith("audio/"));
+  check("o áudio está anexado ao chamado na central", audio, JSON.stringify(detail?.attachments?.map((a) => a.type)));
+  if (audio) {
+    const res = await fetch(`${CENTRAL}/api/attachments/${audio.id}?inline=1`, { headers: { Cookie: cookie } });
+    const bytes = (await res.arrayBuffer()).byteLength;
+    check(
+      "a central entrega o áudio para tocar no navegador",
+      res.ok && res.headers.get("content-type")?.startsWith("audio/") && /inline/.test(res.headers.get("content-disposition") || "") && bytes > 1000,
+      `${res.status} ${res.headers.get("content-type")} ${bytes} bytes`,
+    );
+  }
+  r = await sayAudio(conv);
+  const appended = await waitFor(async () =>
+    (await central(`/api/requests/${request.id}`)).attachments.filter((a) => a.type?.startsWith("audio/")).length >= 2 ? true : null,
+  );
+  check("segundo áudio entra no mesmo chamado", appended);
+  if (request) {
+    await central(`/api/requests/${request.id}/messages`, "POST", { body: "Ouvido na homologação." });
+    await central(`/api/requests/${request.id}`, "PATCH", { status: "Concluída" });
+  }
+  const conv2 = await newConversation("audio-cpf");
+  await say(conv2, "oi");
+  await say(conv2, "1");
+  r = await sayAudio(conv2);
+  check("áudio no pedido de CPF pede para digitar", r.some((t) => t.includes("digite") && t.includes("CPF")), r.join(" | "));
+  await cw(`/conversations/${conv2.id}/toggle_status`, "POST", { status: "resolved" });
+}
+
 // --- Execução ----------------------------------------------------------------------
 const started = Date.now();
 await central("/api/login", "POST", RH);
 console.log(`Central ${CENTRAL} · Chatwoot ${CW} · caixa ${INBOX}`);
-for (const scenario of [chamadoCompleto, pedirAtendente, statusSemChamado, telefoneForaDoTeste, okSemRepetir, cancelarPeloColaborador, notaPeloChatwoot, variosChamados]) {
+const ALL = [chamadoCompleto, pedirAtendente, statusSemChamado, telefoneForaDoTeste, okSemRepetir, cancelarPeloColaborador, notaPeloChatwoot, variosChamados, audioDoColaborador];
+const ONLY = (env.HOMOLOG_SO || "").split(",").filter(Boolean);
+for (const scenario of ONLY.length ? ALL.filter((f) => ONLY.includes(f.name)) : ALL) {
   try {
     await scenario();
   } catch (e) {
