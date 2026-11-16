@@ -827,7 +827,7 @@ async function deliverWhatsappDocument(conversationId, step, phone) {
         String(conversationId), phone, kind, month, String(person.NUMEMP), String(person.NUMCAD), status, new Date().toISOString(),
         String(person.NOMFUN || "").trim() || null,
       );
-  await sendChatwootMessage(conversationId, "Consultando a Senior… isso pode levar até 1 minuto. ⏳");
+  await sendChatwootMessage(conversationId, "Consultando a Senior… costuma levar alguns segundos, mas pode chegar a 2 minutos. ⏳");
   let result;
   try {
     result = await consult(candidateUser(person), kind, month);

@@ -159,3 +159,19 @@ test("query tenta de novo uma vez quando a conexão com a Senior falha", async (
     global.fetch = original;
   }
 });
+
+test("query diferencia lentidão da Senior de falta de conexão", async () => {
+  const { query } = await import("./senior.mjs");
+  const original = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls++;
+    throw Object.assign(new Error("timeout"), { name: "TimeoutError" });
+  };
+  try {
+    await assert.rejects(() => query("R034FUN", ["NUMEMP"]), /demorou demais/);
+    assert.equal(calls, 2);
+  } finally {
+    global.fetch = original;
+  }
+});
