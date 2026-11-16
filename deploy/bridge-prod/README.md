@@ -32,6 +32,9 @@ Para abrir: `age -d -i frizelo-rh-backup.age-key.txt -o backup.tar frizelo-rh-AA
 HTTPS nas portas 45873 e 3100 com o certificado do servidor (autoassinado); `http://` na mesma porta é redirecionado.
 O Chatwoot usa o role `chatwoot_app` (sem superusuário); `chatwoot` fica para backup e manutenção.
 
+A central leva cada chamado para a conversa do Chatwoot a cada 5 minutos (mesmo com `CENTRAL_AVISOS=off`): atributos `chamado`, `chamado_assunto`, `chamado_status` e `chamado_prazo`, e a prioridade pela cor do prazo (verde baixa, amarelo média, laranja alta, vencido urgente).
+Para os atributos aparecerem na lateral da conversa, eles precisam estar cadastrados em Configurações > Atributos personalizados (tipo texto, de conversa). Já estão cadastrados no servidor.
+
 ## Ensaio (sem parar a homologação)
 
 1. Neste PC, rode `exportar-local.sh ensaio <pasta>` e `node gerar-env.mjs <pasta>`.
