@@ -1172,8 +1172,6 @@ const syncChatwootTicket = (id) =>
  * lembrete no WhatsApp para quem não respondeu o RH em 2 dias úteis.
  */
 async function automaticAlerts(now = Date.now()) {
-  // Prazo andou (cor mudou) ou envio anterior falhou: atualiza as conversas no Chatwoot.
-  void syncChatwootTickets(now).catch((e) => console.error("Chamados no Chatwoot:", e.message));
   const { holidays, officeHours, firstResponseHours } = whatsappConfig();
   const open = db
     .prepare(
@@ -2464,6 +2462,10 @@ http
 const wahaWatchdog = startWahaWatchdog({ chatwootBase: chatwootConfiguration().base });
 const emailAlerts = createEmailAlerts();
 console.log(emailAlerts.enabled ? "Avisos por e-mail ligados." : "Avisos por e-mail desligados (configure SMTP_HOST e ALERTA_EMAILS no .env.local).");
+// Chamados nas conversas do Chatwoot (prioridade pelo prazo): não é aviso, roda sempre.
+const runChatwootSync = () => void syncChatwootTickets().catch((e) => console.error("Chamados no Chatwoot:", e.message));
+setInterval(runChatwootSync, 5 * 60000).unref?.();
+setTimeout(runChatwootSync, 20000).unref?.();
 if (process.env.CENTRAL_AVISOS !== "off") {
   const alertTimer = setInterval(() => void automaticAlerts().catch((e) => console.error("Avisos automáticos:", e.message)), 5 * 60000);
   alertTimer.unref?.();
