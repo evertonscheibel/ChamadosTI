@@ -22,7 +22,11 @@ docker compose logs -f central        # ou waha, chatwoot, sidekiq
 docker compose restart central
 systemctl list-timers frizelo-rh-backup.timer
 ./backup.sh                           # backup manual
+./publicar-central.sh                 # nova versão da central (código em ./release); volta sozinha se falhar
 ```
+
+Para publicar uma versão nova da central: copie os arquivos alterados para `release/central` (ou `release/dist`, depois de `npm run build`) e rode `./publicar-central.sh`.
+A imagem anterior fica guardada; o `CENTRAL_TAG` do `.env` diz qual está no ar.
 
 Backup diário às 03:30, guardado por 14 dias em `/opt/backups/frizelo-rh`. Inclui o banco da central, o banco e os anexos do Chatwoot, a sessão do WhatsApp e as configurações.
 O arquivo é cifrado com `age` (chave pública em `backup-recipient.txt`). **A chave privada não fica no servidor**: está em `D:\Backups\bridge-prod\CHAVE` no PC 10.1.1.231 (guarde também uma cópia fora dele).
