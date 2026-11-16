@@ -97,12 +97,25 @@ export async function parseRows(xml) {
       ),
     );
 }
-let queue = Promise.resolve();
+// Uma fila por serviço da Senior ("rubi" = folha, "ronda" = ponto): cada serviço atende uma
+// consulta por vez, mas a partida lenta de um não segura as consultas do outro.
+const queues = new Map();
+const SLOW_MS = 10000;
 export async function query(table, fields, filters = [], product = "rubi") {
   const config = configuration();
   if (!config.enabled || !config.base || !config.user || !config.password)
     throw error("Integração Senior não configurada.", 503);
   const run = async () => {
+    const started = Date.now();
+    try {
+      return await request();
+    } finally {
+      const ms = Date.now() - started;
+      // Sem dados pessoais: só tabela, serviço e tempo.
+      if (ms >= SLOW_MS) console.warn(`[senior] consulta lenta: ${table} (${product}) ${Math.round(ms / 1000)} s`);
+    }
+  };
+  const request = async () => {
     const service = product === "rubi" ? "fp" : "hr";
     const endpoint = new URL(
       `${config.base.replace(/\/+$/, "")}/g5-senior-services/${product}_Synccom_senior_g5_rh_${service}_integracoes`,
@@ -157,9 +170,23 @@ export async function query(table, fields, filters = [], product = "rubi") {
       "iso-8859-1";
     return parseRows(new TextDecoder(encoding).decode(bytes));
   };
-  const task = queue.then(run);
-  queue = task.catch(() => {});
+  const task = (queues.get(product) || Promise.resolve()).then(run);
+  queues.set(product, task.catch(() => {}));
   return task;
+}
+
+/**
+ * Mantém os serviços da Senior "acordados": depois de alguns minutos parados, a primeira
+ * consulta do ponto ("ronda") leva ~30 s. Uma consulta sem resultado (matrícula inexistente)
+ * a cada poucos minutos evita essa espera para o colaborador.
+ */
+export async function warmUp() {
+  const company = configuration().company;
+  const none = [["NUMEMP", "=", company], ["NUMCAD", "=", "-1"]];
+  await Promise.allSettled([
+    query("R034FUN", ["NUMEMP"], none, "rubi"),
+    query("R070ACC", ["NUMEMP"], none, "ronda"),
+  ]);
 }
 export function cents(value) {
   let text = String(value).trim();

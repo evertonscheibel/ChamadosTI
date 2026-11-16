@@ -77,6 +77,10 @@ db.exec("CREATE TABLE IF NOT EXISTS whatsapp_seen (message_id INTEGER PRIMARY KE
 column("whatsapp_seen", "status", "TEXT NOT NULL DEFAULT 'ok'");
 column("whatsapp_seen", "error", "TEXT");
 column("whatsapp_seen", "updated_at", "TEXT");
+// Crescem a cada mensagem do WhatsApp e são lidas a cada 5 min (entregas presas, painel)
+// e ao abrir um chamado (documentos do colaborador): índices evitam varrer a tabela inteira.
+db.exec("CREATE INDEX IF NOT EXISTS whatsapp_seen_status ON whatsapp_seen(status, seen_at)");
+db.exec("CREATE INDEX IF NOT EXISTS whatsapp_documents_conversation ON whatsapp_documents(conversation_id, id)");
 db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 // Entrega das respostas do RH no WhatsApp: pendente | enviado | falhou | nao_entregue.
 column("messages", "wa_status", "TEXT");

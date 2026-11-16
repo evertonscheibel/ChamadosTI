@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { db, verifyPassword, hashPassword } from "./database.mjs";
 import { services, statuses } from "./catalog.mjs";
-import { configuration, links, consult } from "./senior.mjs";
+import { configuration, links, consult, warmUp as warmUpSenior } from "./senior.mjs";
 import { extraction, startExtraction, csv } from "./senior-export.mjs";
 import { synchronization, startSynchronization } from "./senior-import.mjs";
 import { managementCsv } from "./management-export.mjs";
@@ -2604,6 +2604,15 @@ console.log(emailAlerts.enabled ? "Avisos por e-mail ligados." : "Avisos por e-m
 const runChatwootSync = () => void syncChatwootTickets().catch((e) => console.error("Chamados no Chatwoot:", e.message));
 setInterval(runChatwootSync, 5 * 60000).unref?.();
 setTimeout(runChatwootSync, 20000).unref?.();
+// Senior "acordada" no horário em que o RH e os colaboradores usam (6h–22h): sem isso, a
+// primeira consulta do ponto depois de alguns minutos parados leva ~30 s.
+const warmSenior = () => {
+  const hour = Number(new Date().toLocaleString("en-US", { timeZone: "America/Campo_Grande", hour: "numeric", hourCycle: "h23" }));
+  if (hour < 6 || hour >= 22 || !configuration().enabled) return;
+  void warmUpSenior().catch(() => {});
+};
+setInterval(warmSenior, 4 * 60000).unref?.();
+setTimeout(warmSenior, 30000).unref?.();
 if (process.env.CENTRAL_AVISOS !== "off") {
   const alertTimer = setInterval(() => void automaticAlerts().catch((e) => console.error("Avisos automáticos:", e.message)), 5 * 60000);
   alertTimer.unref?.();

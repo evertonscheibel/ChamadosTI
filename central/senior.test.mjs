@@ -175,3 +175,23 @@ test("query diferencia lentidão da Senior de falta de conexão", async () => {
     global.fetch = original;
   }
 });
+
+test("consulta lenta de um serviço não segura a do outro", async () => {
+  const { query } = await import("./senior.mjs");
+  const original = global.fetch;
+  const order = [];
+  global.fetch = async (url) => {
+    const ronda = String(url).includes("ronda_");
+    if (ronda) await new Promise((r) => setTimeout(r, 300));
+    order.push(ronda ? "ronda" : "rubi");
+    return new Response("<x/>", { status: 500 });
+  };
+  try {
+    const slow = query("R070ACC", ["NUMEMP"], [], "ronda").catch(() => {});
+    const fast = query("R034FUN", ["NUMEMP"], [], "rubi").catch(() => {});
+    await Promise.all([slow, fast]);
+    assert.deepEqual(order, ["rubi", "ronda"]);
+  } finally {
+    global.fetch = original;
+  }
+});
