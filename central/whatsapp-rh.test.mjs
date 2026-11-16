@@ -17,6 +17,7 @@ import {
   ticketClosedText,
   statusText,
   formatLocal,
+  chatwootTicket,
 } from "./whatsapp-rh.mjs";
 
 const ms = (iso) => Date.parse(iso);
@@ -236,4 +237,28 @@ test("1ª resposta: relógio só corre no expediente (7h–17h, dias úteis)", a
   assert.equal(at("2026-11-16T14:00:00-04:00").level, "atrasado");
   assert.deepEqual(at("2026-11-16T15:00:00-04:00", "2026-11-16T13:00:00-04:00"), { due_at: "2026-11-16T18:00:00.000Z", level: "respondido", late: false });
   assert.equal(at("2026-11-16T15:00:00-04:00", "2026-11-16T14:30:00-04:00").late, true);
+});
+
+test("chamado no Chatwoot: prioridade acompanha a cor do prazo", () => {
+  const base = { protocol: "FRZ-2026-000010", subject: "Atestado / afastamento", status: "Recebida",
+    created_at: "2026-11-16T12:00:00.000Z", due_at: "2026-11-18T12:00:00.000Z" };
+  const inicio = chatwootTicket(base, ms("2026-11-16T13:00:00.000Z"));
+  assert.equal(inicio.priority, "low");
+  assert.equal(inicio.attributes.chamado, "FRZ-2026-000010");
+  assert.equal(inicio.attributes.chamado_assunto, "Atestado / afastamento");
+  assert.equal(inicio.attributes.chamado_status, "Recebida");
+  assert.match(inicio.attributes.chamado_prazo, /18\/11/);
+  assert.equal(chatwootTicket(base, ms("2026-11-17T13:00:00.000Z")).priority, "medium");
+  assert.equal(chatwootTicket(base, ms("2026-11-18T00:00:00.000Z")).priority, "high");
+  assert.equal(chatwootTicket(base, ms("2026-11-18T12:00:00.000Z")).priority, "urgent");
+});
+
+test("chamado concluído ou sem prazo fica sem prioridade no Chatwoot", () => {
+  const base = { protocol: "P", subject: "S", created_at: "2026-11-16T12:00:00.000Z", due_at: "2026-11-18T12:00:00.000Z" };
+  const fim = chatwootTicket({ ...base, status: "Concluída" }, ms("2026-11-20T12:00:00.000Z"));
+  assert.equal(fim.priority, null);
+  assert.equal(fim.attributes.chamado_status, "Concluída");
+  const semPrazo = chatwootTicket({ ...base, status: "Em atendimento", due_at: null });
+  assert.equal(semPrazo.priority, null);
+  assert.equal(semPrazo.attributes.chamado_prazo, "sem prazo");
 });

@@ -155,6 +155,27 @@ export function slaStatus(createdAt, dueAt, now = Date.now(), holidays = []) {
   return { percent: Math.min(percent, 100), level };
 }
 
+// Prioridade do Chatwoot pela cor do prazo: a atendente vê no próprio Chatwoot o que está atrasado.
+const CHATWOOT_PRIORITY = { verde: "low", amarelo: "medium", laranja: "high", vermelho: "urgent" };
+
+/**
+ * O que a conversa do Chatwoot mostra do chamado: atributos (número, assunto,
+ * status, prazo) e prioridade. Chamado concluído fica sem prioridade.
+ */
+export function chatwootTicket(request, now = Date.now(), holidays = []) {
+  const open = request.status !== "Concluída";
+  const sla = open && request.due_at ? slaStatus(request.created_at, request.due_at, now, holidays) : null;
+  return {
+    attributes: {
+      chamado: request.protocol,
+      chamado_assunto: request.subject,
+      chamado_status: request.status,
+      chamado_prazo: request.due_at ? formatLocal(Date.parse(request.due_at)) : "sem prazo",
+    },
+    priority: (sla && CHATWOOT_PRIORITY[sla.level]) || null,
+  };
+}
+
 // --- Textos ------------------------------------------------------------------
 // Negrito: **texto**. O WAHA converte o Markdown do Chatwoot (*texto* vira itálico no WhatsApp).
 const SIGNATURE = "— RH Frizelo";

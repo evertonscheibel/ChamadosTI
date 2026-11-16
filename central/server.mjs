@@ -60,6 +60,7 @@ import {
   listInboxConversations,
   listConversationMessages,
   escalateToHuman,
+  syncTicket,
 } from "./chatwoot-client.mjs";
 import { recoverMissed } from "./whatsapp-recovery.mjs";
 import { claimMessage, isSettled, hold, runTracked, rescueStuck, deliveryStats } from "./whatsapp-delivery.mjs";
@@ -91,6 +92,7 @@ import {
   awaitingEmployeeText,
   awaitingReminderText,
   firstResponseStatus,
+  chatwootTicket,
 } from "./whatsapp-rh.mjs";
 import { holeritePdf, espelhoPdf } from "./senior-documents.mjs";
 import { situationNames } from "./senior.mjs";
@@ -951,6 +953,7 @@ async function processWhatsappRh(payload, config) {
       return request;
     });
     emailNewRequest(created.id);
+    syncChatwootTicket(created.id);
     await sendChatwootMessage(
       conversationId,
       ticketOpenedText(created.protocol, step.state.theme ?? 0, {
@@ -1123,10 +1126,54 @@ const whatsappConversation = (request) =>
     ? String(request.chatwoot_conversation_id)
     : null;
 /**
+ * Leva o chamado para a conversa do Chatwoot (número, assunto, status, prazo e
+ * prioridade pela cor do prazo). Só envia o que mudou desde o último envio; se
+ * o Chatwoot estiver fora, a próxima volta (5 min) tenta de novo.
+ * Uma conversa pode ter vários chamados: mostra o aberto mais recente ou, se
+ * todos estiverem concluídos, o último (enviado uma vez e sai da varredura).
+ */
+async function syncChatwootTickets(now = Date.now(), onlyId = null) {
+  const { holidays } = whatsappConfig();
+  const rows = db
+    .prepare(
+      `SELECT r.protocol,r.subject,r.status,r.created_at,r.due_at,r.chatwoot_conversation_id,s.signature
+       FROM requests r LEFT JOIN chatwoot_ticket_sync s ON s.conversation_id=r.chatwoot_conversation_id
+       WHERE r.chatwoot_conversation_id IS NOT NULL
+         AND r.id=(SELECT r2.id FROM requests r2 WHERE r2.chatwoot_conversation_id=r.chatwoot_conversation_id
+                   ORDER BY (r2.status<>'Concluída') DESC, r2.created_at DESC LIMIT 1)
+         AND (r.status<>'Concluída' OR s.signature IS NULL OR s.signature NOT LIKE '%"chamado_status":"Concluída"%')
+         AND (? IS NULL OR r.chatwoot_conversation_id=(SELECT chatwoot_conversation_id FROM requests WHERE id=?))`,
+    )
+    .all(onlyId, onlyId);
+  const saved = db.prepare(
+    "INSERT INTO chatwoot_ticket_sync (conversation_id,signature,synced_at) VALUES (?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET signature=excluded.signature,synced_at=excluded.synced_at",
+  );
+  let failures = 0;
+  for (const request of rows) {
+    const ticket = chatwootTicket(request, now, holidays);
+    const signature = JSON.stringify(ticket);
+    if (signature === request.signature) continue;
+    const conversationId = String(request.chatwoot_conversation_id);
+    try {
+      await syncTicket(conversationId, ticket);
+      saved.run(conversationId, signature, new Date().toISOString());
+    } catch (e) {
+      // Conversa apagada no Chatwoot: não adianta insistir.
+      if (e.chatwootStatus === 404) saved.run(conversationId, signature, new Date().toISOString());
+      else if (++failures === 1) console.error(`Chamado ${request.protocol} no Chatwoot:`, e.message);
+      if (failures >= 3) break; // Chatwoot fora: tenta de novo na próxima volta.
+    }
+  }
+}
+const syncChatwootTicket = (id) =>
+  void syncChatwootTickets(Date.now(), id).catch((e) => console.error("Chamado no Chatwoot:", e.message));
+/**
  * A cada 5 minutos: e-mail quando um chamado entra em laranja ou vermelho, e
  * lembrete no WhatsApp para quem não respondeu o RH em 2 dias úteis.
  */
 async function automaticAlerts(now = Date.now()) {
+  // Prazo andou (cor mudou) ou envio anterior falhou: atualiza as conversas no Chatwoot.
+  void syncChatwootTickets(now).catch((e) => console.error("Chamados no Chatwoot:", e.message));
   const { holidays, officeHours, firstResponseHours } = whatsappConfig();
   const open = db
     .prepare(
@@ -2314,6 +2361,7 @@ http
                 id,
               );
             });
+            syncChatwootTicket(id);
             // Aguardando colaborador: o WhatsApp avisa que o RH precisa de uma resposta;
             // depois de 2 dias úteis sem resposta, sai um lembrete (automaticAlerts).
             if (input.status === "Aguardando colaborador" && request.status !== "Aguardando colaborador") {

@@ -7,7 +7,7 @@ process.env.CHATWOOT_ACCOUNT_ID = "1";
 process.env.CHATWOOT_BOT_TOKEN = "bot-token";
 process.env.CHATWOOT_BOT_SECRET = "shh";
 
-const { verifySignature, sendMessage } = await import("./chatwoot-client.mjs");
+const { verifySignature, sendMessage, syncTicket } = await import("./chatwoot-client.mjs");
 
 function sign(secret, timestamp, body) {
   return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
@@ -107,6 +107,36 @@ test("handOffTicket deixa nota interna, soma a etiqueta e devolve a conversa par
     assert.match(calls[0].body.content, /FRZ-2026-000042/);
     assert.deepEqual(calls[2].body.labels, ["rh", "chamado_aberto"]);
     assert.deepEqual(calls[3].body, { status: "open" });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("syncTicket grava os atributos sem apagar os outros e ajusta a prioridade", async () => {
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return { ok: true, json: async () => { throw new SyntaxError("corpo vazio"); } };
+  };
+  try {
+    await syncTicket("7", { attributes: { chamado: "FRZ-1" }, priority: "high" });
+    assert.deepEqual(calls, [
+      { url: "https://chatwoot.test/api/v1/accounts/1/conversations/7/custom_attributes",
+        body: { custom_attributes: { chamado: "FRZ-1" }, merge: true } },
+      { url: "https://chatwoot.test/api/v1/accounts/1/conversations/7/toggle_priority",
+        body: { priority: "high" } },
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("erro do Chatwoot informa o código HTTP", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 404 });
+  try {
+    await assert.rejects(() => syncTicket("7", { attributes: {}, priority: null }), (e) => e.chatwootStatus === 404);
   } finally {
     global.fetch = originalFetch;
   }

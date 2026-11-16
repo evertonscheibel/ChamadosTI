@@ -95,8 +95,11 @@ async function conversationApi(conversationId, path, method, body) {
     throw error("Não foi possível falar com o Chatwoot agora.", 503);
   }
   if (!response.ok)
-    throw error(`O Chatwoot recusou a mensagem (${response.status}).`, 502);
-  return response.json();
+    throw Object.assign(error(`O Chatwoot recusou a mensagem (${response.status}).`, 502), {
+      chatwootStatus: response.status,
+    });
+  // toggle_priority e custom_attributes respondem sem corpo.
+  return response.json().catch(() => null);
 }
 
 /** Posta uma mensagem de saída (outgoing) numa conversa do Chatwoot, como o Agent Bot. */
@@ -135,6 +138,18 @@ export async function escalateToHuman(conversationId, reason) {
     private: true,
   });
   await handToHuman(conversationId);
+}
+
+/**
+ * Mostra o chamado da central na conversa do Chatwoot: atributos (só as chaves
+ * enviadas mudam) e prioridade (null tira a prioridade).
+ */
+export async function syncTicket(conversationId, { attributes, priority }) {
+  await conversationApi(conversationId, "/custom_attributes", "POST", {
+    custom_attributes: attributes,
+    merge: true,
+  });
+  await conversationApi(conversationId, "/toggle_priority", "POST", { priority });
 }
 
 /** Tira a conversa do bot ("open"), o que a coloca no rodízio das atendentes. */

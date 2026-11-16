@@ -54,6 +54,9 @@ column("history", "data", "TEXT NOT NULL DEFAULT '{}'");
 column("history", "internal", "INTEGER NOT NULL DEFAULT 0");
 column("history", "actor_name", "TEXT");
 column("requests", "chatwoot_conversation_id", "TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS requests_chatwoot_conversation ON requests(chatwoot_conversation_id)");
+// Último chamado (e estado) mostrado em cada conversa do Chatwoot; diferente = reenviar.
+db.exec("CREATE TABLE IF NOT EXISTS chatwoot_ticket_sync (conversation_id TEXT PRIMARY KEY, signature TEXT NOT NULL, synced_at TEXT NOT NULL)");
 column("whatsapp_rh", "data", "TEXT NOT NULL DEFAULT '{}'");
 // Auditoria: quem recebeu qual documento da Senior pelo WhatsApp.
 db.exec(
