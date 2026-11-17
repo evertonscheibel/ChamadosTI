@@ -784,6 +784,18 @@ function saveWhatsappState(conversationId, state, phone, requestId) {
     JSON.stringify(state.data || {}),
   );
 }
+// Falha passageira da Senior (rede, partida a frio): espera um pouco e tenta mais uma vez
+// antes de devolver o erro ao colaborador.
+async function withSeniorRetry(fn, wait = 15000) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (!e?.transient) throw e;
+    console.warn(`[senior] falha passageira, nova tentativa em ${wait / 1000} s: ${e.message}`);
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return fn();
+  }
+}
 // Identidade confirmada na Senior por conversa (só em memória, vale 30 min).
 const whatsappIdentities = new Map();
 const IDENTITY_TTL = 30 * 60000;
@@ -792,7 +804,7 @@ async function verifyWhatsappIdentity(conversationId, step, phone) {
   const attempts = (step.state.data?.attempts || 0) + 1;
   let candidate = null;
   try {
-    candidate = await lookupCandidate({ cpf, matricula });
+    candidate = await withSeniorRetry(() => lookupCandidate({ cpf, matricula }));
   } catch (e) {
     console.error(`WhatsApp RH conversa ${conversationId}: Senior indisponível na verificação:`, e.message);
     saveWhatsappState(conversationId, { ...step.state, stage: "doc_cpf", data: { attempts: step.state.data?.attempts || 0 } }, phone);
@@ -831,7 +843,7 @@ async function deliverWhatsappDocument(conversationId, step, phone) {
   await sendChatwootMessage(conversationId, "Consultando a Senior… costuma levar alguns segundos, mas pode chegar a 2 minutos. ⏳");
   let result;
   try {
-    result = await consult(candidateUser(person), kind, month);
+    result = await withSeniorRetry(() => consult(candidateUser(person), kind, month));
   } catch (e) {
     audit(`erro: ${e.message}`.slice(0, 200));
     return `Não consegui consultar a Senior agora (${e.message}). Tente de novo em alguns minutos.

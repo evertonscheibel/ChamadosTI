@@ -169,8 +169,9 @@ test("query diferencia lentidão da Senior de falta de conexão", async () => {
     throw Object.assign(new Error("timeout"), { name: "TimeoutError" });
   };
   try {
-    await assert.rejects(() => query("R034FUN", ["NUMEMP"]), /demorou demais/);
-    assert.equal(calls, 2);
+    // Lentidão: uma espera longa só, sem recomeçar do zero.
+    await assert.rejects(() => query("R034FUN", ["NUMEMP"]), (e) => /demorou demais/.test(e.message) && e.transient);
+    assert.equal(calls, 1);
   } finally {
     global.fetch = original;
   }
@@ -193,5 +194,32 @@ test("consulta lenta de um serviço não segura a do outro", async () => {
     assert.deepEqual(order, ["rubi", "ronda"]);
   } finally {
     global.fetch = original;
+  }
+});
+
+test("falha de conexão repete com pausa e aquecimento não entra na frente", async () => {
+  const { query } = await import("./senior.mjs");
+  const original = global.fetch;
+  const originalTimeout = global.setTimeout;
+  global.setTimeout = (fn, _ms, ...a) => originalTimeout(fn, 0, ...a);
+  let calls = 0;
+  global.fetch = async () => {
+    calls++;
+    throw new TypeError("fetch failed");
+  };
+  try {
+    await assert.rejects(() => query("R034FUN", ["NUMEMP"]), (e) => /conectar/.test(e.message) && e.transient);
+    assert.equal(calls, 3);
+    calls = 0;
+    let release;
+    global.fetch = () => { calls++; return new Promise((r) => { release = r; }); };
+    const busy = query("R034FUN", ["NUMEMP"]).catch(() => {});
+    assert.deepEqual(await query("R034FUN", ["NUMEMP"], [], "rubi", { warm: true }), []);
+    release(new Response("<x/>", { status: 500 }));
+    await busy;
+    assert.equal(calls, 1);
+  } finally {
+    global.fetch = original;
+    global.setTimeout = originalTimeout;
   }
 });

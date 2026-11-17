@@ -100,8 +100,14 @@ export async function parseRows(xml) {
 // Uma fila por serviço da Senior ("rubi" = folha, "ronda" = ponto): cada serviço atende uma
 // consulta por vez, mas a partida lenta de um não segura as consultas do outro.
 const queues = new Map();
+const pending = new Map(); // consultas na fila ou em andamento, por serviço
 const SLOW_MS = 10000;
-export async function query(table, fields, filters = [], product = "rubi") {
+// A partida a frio da Senior chega a ~60 s: um limite curto cortava a resposta que estava
+// chegando e a nova tentativa começava do zero (90 s no total). Agora uma espera longa;
+// repetir só quando a conexão falha de fato (rede, reset), com pausa crescente.
+const TIMEOUT_MS = 90000;
+const RETRY_WAITS = [2000, 8000];
+export async function query(table, fields, filters = [], product = "rubi", { warm = false } = {}) {
   const config = configuration();
   if (!config.enabled || !config.base || !config.user || !config.password)
     throw error("Integração Senior não configurada.", 503);
@@ -112,7 +118,7 @@ export async function query(table, fields, filters = [], product = "rubi") {
     } finally {
       const ms = Date.now() - started;
       // Sem dados pessoais: só tabela, serviço e tempo.
-      if (ms >= SLOW_MS) console.warn(`[senior] consulta lenta: ${table} (${product}) ${Math.round(ms / 1000)} s`);
+      if (ms >= SLOW_MS) console.warn(`[senior] consulta lenta${warm ? " (aquecimento)" : ""}: ${table} (${product}) ${Math.round(ms / 1000)} s`);
     }
   };
   const request = async () => {
@@ -124,24 +130,27 @@ export async function query(table, fields, filters = [], product = "rubi") {
       throw error("A integração exige conexão HTTPS.", 503);
     const xml = `<?xml version="1.0" encoding="UTF-8"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="http://services.senior.com.br"><soapenv:Header/><soapenv:Body><ser:ConsultarTabelas><user>${escape(config.user)}</user><password>${escape(config.password)}</password><encryption>${escape(config.encryption)}</encryption><parameters><consulta><id>central</id><tabela>${table}</tabela><campos>${fields.join(",")}</campos>${filters.map(([campo, condicao, valor]) => `<filtro><campo>${campo}</campo><condicao>${escape(condicao)}</condicao><valor>${escape(valor)}</valor></filtro>`).join("")}</consulta></parameters></ser:ConsultarTabelas></soapenv:Body></soapenv:Envelope>`;
     let response;
-    // Falha de conexão ou lentidão momentânea da Senior: tenta mais uma vez antes de desistir.
-    for (let attempt = 1; !response; attempt++) {
+    for (let attempt = 0; !response; attempt++) {
       try {
         response = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "text/xml; charset=utf-8", SOAPAction: "" },
           body: xml,
-          signal: AbortSignal.timeout(45000),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
         });
       } catch (e) {
-        if (attempt >= 2)
-          throw error(
-            e?.name === "TimeoutError"
-              ? "A Senior demorou demais para responder. Tente novamente em alguns minutos."
-              : "Não foi possível conectar à Senior. Tente novamente mais tarde.",
-            503,
+        const timeout = e?.name === "TimeoutError";
+        if (timeout || attempt >= RETRY_WAITS.length)
+          throw Object.assign(
+            error(
+              timeout
+                ? "A Senior demorou demais para responder. Tente novamente em alguns minutos."
+                : "Não foi possível conectar à Senior. Tente novamente mais tarde.",
+              503,
+            ),
+            { transient: true },
           );
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, RETRY_WAITS[attempt]));
       }
     }
     if (!response.ok) throw error("A Senior recusou a consulta.", 502);
@@ -170,7 +179,10 @@ export async function query(table, fields, filters = [], product = "rubi") {
       "iso-8859-1";
     return parseRows(new TextDecoder(encoding).decode(bytes));
   };
-  const task = (queues.get(product) || Promise.resolve()).then(run);
+  // Aquecimento nunca entra na frente de um colaborador: com a fila ocupada, o serviço já está acordado.
+  if (warm && pending.get(product)) return [];
+  pending.set(product, (pending.get(product) || 0) + 1);
+  const task = (queues.get(product) || Promise.resolve()).then(run).finally(() => pending.set(product, pending.get(product) - 1));
   queues.set(product, task.catch(() => {}));
   return task;
 }
@@ -184,8 +196,8 @@ export async function warmUp() {
   const company = configuration().company;
   const none = [["NUMEMP", "=", company], ["NUMCAD", "=", "-1"]];
   await Promise.allSettled([
-    query("R034FUN", ["NUMEMP"], none, "rubi"),
-    query("R070ACC", ["NUMEMP"], none, "ronda"),
+    query("R034FUN", ["NUMEMP"], none, "rubi", { warm: true }),
+    query("R010SIT", ["CODSIT"], [["CODSIT", "=", "-1"]], "ronda", { warm: true }),
   ]);
 }
 export function cents(value) {
