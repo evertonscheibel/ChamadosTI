@@ -11,7 +11,11 @@ TMP="$DEST/.tmp-$STAMP"
 RECIPIENTS=/opt/apps/frizelo-rh/backup-recipient.txt
 umask 077
 mkdir -p "$TMP"
-trap 'rm -rf "$TMP"' EXIT
+# Situação para a Central (alerta da TI): "erro" se qualquer passo falhar, "ok" + data no fim.
+STATUS=/opt/apps/frizelo-rh/state/central-data/backup-status.json
+LAST_OK=$(grep -o '"lastOk":"[^"]*"' "$STATUS" 2>/dev/null | cut -d'"' -f4 || true)
+status() { printf '{"result":"%s","at":"%s","lastOk":"%s"}\n' "$1" "$(date -Iseconds)" "$2" > "$STATUS.tmp" && chmod 644 "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"; }
+trap 'rc=$?; rm -rf "$TMP"; [ $rc -ne 0 ] && status erro "$LAST_OK"; exit $rc' EXIT
 docker compose exec -T central node -e "const {DatabaseSync}=require('node:sqlite');require('fs').rmSync('/app/data/.backup.sqlite',{force:true});new DatabaseSync('/app/data/central.sqlite').exec(\"VACUUM INTO '/app/data/.backup.sqlite'\")"
 mv state/central-data/.backup.sqlite "$TMP/central.sqlite"
 docker compose exec -T postgres pg_dump -U chatwoot -Fc chatwoot > "$TMP/chatwoot.dump"
@@ -22,4 +26,5 @@ OUT="$DEST/frizelo-rh-$STAMP.tar.age"
 tar cf - -C "$TMP" --exclude=./out . | age -R "$RECIPIENTS" -o "$OUT.parcial"
 mv "$OUT.parcial" "$OUT"
 find "$DEST" -maxdepth 1 \( -name 'frizelo-rh-*.tar.age' -o -name 'frizelo-rh-*.tar' \) -mtime +14 -delete
+status ok "$(date -Iseconds)"
 echo "Backup ok: $OUT ($(du -h "$OUT" | cut -f1))"

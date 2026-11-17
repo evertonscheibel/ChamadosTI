@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { db, verifyPassword, hashPassword } from "./database.mjs";
 import { services, statuses } from "./catalog.mjs";
-import { configuration, links, consult, warmUp as warmUpSenior } from "./senior.mjs";
+import { configuration, links, consult, warmUp as warmUpSenior, seniorHealth } from "./senior.mjs";
+import { createTiAlerts, backupProblem } from "./ti-alerts.mjs";
 import { extraction, startExtraction, csv } from "./senior-export.mjs";
 import { synchronization, startSynchronization } from "./senior-import.mjs";
 import { managementCsv } from "./management-export.mjs";
@@ -845,10 +846,19 @@ async function deliverWhatsappDocument(conversationId, step, phone) {
   try {
     result = await withSeniorRetry(() => consult(candidateUser(person), kind, month));
   } catch (e) {
+    if (e?.transient && scheduleLateDocument(conversationId, person, kind, month, audit)) {
+      audit("aguardando senior");
+      return `A Senior está lenta agora. Assim que ela responder eu te envio o documento aqui, não precisa pedir de novo. 🙂
+${anotherMonthText}`;
+    }
     audit(`erro: ${e.message}`.slice(0, 200));
     return `Não consegui consultar a Senior agora (${e.message}). Tente de novo em alguns minutos.
 ${anotherMonthText}`;
   }
+  return (await sendWhatsappDocument(conversationId, result, person, kind, month, audit)) ?? anotherMonthText;
+}
+/** Envia o PDF; devolve um texto quando não há dados (senão null). */
+async function sendWhatsappDocument(conversationId, result, person, kind, month, audit) {
   const empty = kind === "holerite" ? !result.events?.length : !result.marks?.length && !result.situations?.length;
   if (empty) {
     audit("sem dados");
@@ -863,7 +873,36 @@ ${anotherMonthText}`;
     { name: `${label.toLowerCase().replace(/ /g, "-")}-${month}.pdf`, type: "application/pdf", content },
   ]);
   audit("enviado");
-  return anotherMonthText;
+  return null;
+}
+// Pedidos que a Senior não respondeu: o bot tenta de novo sozinho a cada 3 min por até 1 h e
+// entrega quando conseguir. Fica só em memória (o vínculo já confirmado não vai para o banco).
+const lateDocuments = new Map();
+const LATE_WAIT = 3 * 60000;
+const LATE_TRIES = 20;
+function scheduleLateDocument(conversationId, person, kind, month, audit) {
+  const key = `${conversationId}:${kind}:${month}`;
+  if (lateDocuments.has(key)) return true;
+  if (lateDocuments.size >= 50) return false;
+  const attempt = async (tries) => {
+    try {
+      const result = await consult(candidateUser(person), kind, month);
+      lateDocuments.delete(key);
+      const text = await sendWhatsappDocument(conversationId, result, person, kind, month, audit);
+      if (text) await sendChatwootMessage(conversationId, text);
+    } catch (e) {
+      if (e?.transient && tries < LATE_TRIES) {
+        lateDocuments.set(key, setTimeout(() => void attempt(tries + 1), LATE_WAIT));
+        return;
+      }
+      lateDocuments.delete(key);
+      audit(`erro: ${e.message}`.slice(0, 200));
+      const label = kind === "holerite" ? "holerite" : "espelho de ponto";
+      await sendChatwootMessage(conversationId, `Não consegui buscar seu ${label} na Senior. Envie **menu** e escolha falar com o RH, que eles te enviam.`).catch(() => {});
+    }
+  };
+  lateDocuments.set(key, setTimeout(() => void attempt(1), LATE_WAIT));
+  return true;
 }
 async function processWhatsappRh(payload, config) {
   const conversationId = String(payload.conversation.id);
@@ -2618,6 +2657,30 @@ http
 // Vigia da sessão do WhatsApp (WAHA): reinicia sozinho quando ela trava.
 const wahaWatchdog = startWahaWatchdog({ chatwootBase: chatwootConfiguration().base });
 const emailAlerts = createEmailAlerts();
+// Alertas para a TI: WhatsApp fora por mais de 10 min, Senior com 3 falhas seguidas, backup atrasado ou com erro.
+const tiAlerts = createTiAlerts();
+console.log(tiAlerts.enabled ? "Alertas da TI por e-mail ligados." : "Alertas da TI por e-mail desligados (configure SMTP_HOST e ALERTA_TI_EMAILS).");
+let whatsappBadSince = null;
+const checkTi = async () => {
+  const waha = wahaWatchdog.getHealth();
+  if (waha.enabled) {
+    if (waha.health === "ok") {
+      whatsappBadSince = null;
+      await tiAlerts.clear("whatsapp", "WhatsApp do RH");
+    } else if (waha.health !== "verificando") {
+      whatsappBadSince ??= Date.now();
+      if (Date.now() - whatsappBadSince >= 10 * 60000)
+        await tiAlerts.raise("whatsapp", "WhatsApp do RH fora do ar", `situação "${waha.health}"${waha.health === "qr" ? ": é preciso ler o QR code de novo" : ""}`);
+    }
+  }
+  const senior = seniorHealth();
+  if (senior.failures >= 3) await tiAlerts.raise("senior", "Senior falhando", `${senior.failures} consultas seguidas sem resposta: ${senior.lastError}`);
+  else if (senior.failures === 0) await tiAlerts.clear("senior", "Conexão com a Senior");
+  const backup = backupProblem(`${process.env.CENTRAL_DATA_DIR || fileURLToPath(new URL("../data/", import.meta.url))}/backup-status.json`);
+  if (backup) await tiAlerts.raise("backup", "Backup do atendimento do RH com problema", backup);
+  else await tiAlerts.clear("backup", "Backup do atendimento do RH");
+};
+setInterval(() => void checkTi().catch((e) => console.error("Alertas da TI:", e.message)), 5 * 60000).unref?.();
 console.log(emailAlerts.enabled ? "Avisos por e-mail ligados." : "Avisos por e-mail desligados (configure SMTP_HOST e ALERTA_EMAILS no .env.local).");
 // Chamados nas conversas do Chatwoot (prioridade pelo prazo): não é aviso, roda sempre.
 const runChatwootSync = () => void syncChatwootTickets().catch((e) => console.error("Chamados no Chatwoot:", e.message));

@@ -107,6 +107,9 @@ const SLOW_MS = 10000;
 // repetir só quando a conexão falha de fato (rede, reset), com pausa crescente.
 const TIMEOUT_MS = 90000;
 const RETRY_WAITS = [2000, 8000];
+// Saúde da conexão (para o alerta da TI): falhas de conexão/lentidão seguidas.
+const health = { failures: 0, lastError: null, lastOkAt: null };
+export const seniorHealth = () => ({ ...health });
 export async function query(table, fields, filters = [], product = "rubi", { warm = false } = {}) {
   const config = configuration();
   if (!config.enabled || !config.base || !config.user || !config.password)
@@ -114,7 +117,12 @@ export async function query(table, fields, filters = [], product = "rubi", { war
   const run = async () => {
     const started = Date.now();
     try {
-      return await request();
+      const rows = await request();
+      Object.assign(health, { failures: 0, lastOkAt: new Date().toISOString() });
+      return rows;
+    } catch (e) {
+      if (e?.transient) Object.assign(health, { failures: health.failures + 1, lastError: e.message });
+      throw e;
     } finally {
       const ms = Date.now() - started;
       // Sem dados pessoais: só tabela, serviço e tempo.
