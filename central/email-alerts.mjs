@@ -7,6 +7,14 @@ import nodemailer from "nodemailer";
 // O e-mail leva só protocolo, assunto, nome, canal e prazo: nunca o texto do
 // chamado (pode ter dado de saúde, salário etc.). O conteúdo fica na central.
 
+function readSecret(file) {
+  try {
+    return readFileSync(file, "utf8").replace(/\r?\n$/, "");
+  } catch {
+    return "";
+  }
+}
+
 export function emailConfig(env) {
   let settings = env;
   if (!settings) {
@@ -29,7 +37,8 @@ export function emailConfig(env) {
     port,
     secure: settings.SMTP_SECURE ? settings.SMTP_SECURE === "true" : port === 465,
     user: settings.SMTP_USER || "",
-    pass: settings.SMTP_PASS || "",
+    // SMTP_PASS_FILE: senha num arquivo à parte (o Docker não mexe em "$" e outros caracteres).
+    pass: settings.SMTP_PASS_FILE ? readSecret(settings.SMTP_PASS_FILE) : settings.SMTP_PASS || "",
     from: settings.SMTP_FROM || settings.SMTP_USER || "",
     recipients,
     centralUrl: String(settings.CENTRAL_URL || "http://127.0.0.1:45873").replace(/\/+$/, ""),
