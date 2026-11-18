@@ -94,12 +94,14 @@ services:
       CENTRAL_DATA_DIR: /app/data
       CENTRAL_DEMO: "off"
       SENIOR_ENV_FILE: /run/senior/senior.env
+      SMTP_PASS_FILE: /run/secrets/smtp_pass
       TZ: America/Campo_Grande
     ports: ["127.0.0.1:45874:45873"]
     volumes:
       - ./state/central-data:/app/data
       - ./central.env:/app/.env.local:ro
       - /opt/apps/senior-hcm-connector/.env:/run/senior/senior.env:ro
+      - ./smtp-pass.txt:/run/secrets/smtp_pass:ro
     depends_on: [chatwoot, waha]
 
 networks:
