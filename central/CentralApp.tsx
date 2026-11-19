@@ -22,6 +22,7 @@ import {
   EyeOff,
   Building2,
   Headphones,
+  ArrowRightLeft,
   CircleHelp,
   Send,
   CheckCircle2,
@@ -445,6 +446,91 @@ function MediaFile({ file }: { file: { id: string; name: string; type: string; s
   );
 }
 
+/** Transferir o atendimento para outra pessoa do RH (ou devolver para a fila), com motivo. */
+function TransferDialog({
+  request,
+  user,
+  team,
+  onClose,
+  onDone,
+}: {
+  request: Request;
+  user: User;
+  team: { id: string; name: string }[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const options = team.filter((m) => m.id !== request.assigned_to && m.id !== user.id);
+  const [to, setTo] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/requests/${request.id}`, "PATCH", {
+        transfer: { to: to === "fila" ? null : to, reason },
+      });
+      onDone();
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Transferir atendimento" onClose={busy ? () => {} : onClose}>
+      <form className="request-form" onSubmit={submit}>
+        <p className="side-sub">
+          {request.protocol} · {request.subject}. Hoje com{" "}
+          <strong>{request.assigned_name || "ninguém"}</strong>.
+        </p>
+        <label>
+          Transferir para
+          <select required value={to} onChange={(e) => setTo(e.target.value)} disabled={busy}>
+            <option value="" disabled>
+              Escolha quem vai atender
+            </option>
+            {options.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+            {request.assigned_to && <option value="fila">Ninguém (devolver para a fila do RH)</option>}
+          </select>
+        </label>
+        <label>
+          Motivo
+          <textarea
+            required
+            minLength={3}
+            maxLength={500}
+            rows={3}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            disabled={busy}
+            placeholder="Ex.: assunto de benefícios, quem cuida é a Stephany."
+          />
+        </label>
+        <p className="side-sub">
+          O motivo fica como nota interna no chamado. O colaborador não vê a transferência.
+        </p>
+        {error && <Notice>{error}</Notice>}
+        <div className="form-actions">
+          <button className="button secondary" type="button" onClick={onClose} disabled={busy}>
+            Cancelar
+          </button>
+          <button className="button primary" type="submit" disabled={busy || !to || reason.trim().length < 3}>
+            <ArrowRightLeft size={16} />
+            {busy ? "Transferindo…" : "Transferir"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function RequestDetail({
   id,
   user,
@@ -464,6 +550,7 @@ function RequestDetail({
   const [internal, setInternal] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [team, setTeam] = useState<{ id: string; name: string }[]>([]);
+  const [transferring, setTransferring] = useState(false);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const [message, setMessage] = useState("");
@@ -662,6 +749,10 @@ function RequestDetail({
                   Assumir
                 </button>
               )}
+              <button className="button secondary" disabled={busy} onClick={() => setTransferring(true)}>
+                <ArrowRightLeft size={16} />
+                Transferir
+              </button>
               <select
                 aria-label="Status do chamado"
                 disabled={busy}
@@ -905,19 +996,15 @@ function RequestDetail({
           <section className="side-card">
             <h2>Responsável</h2>
             {rh ? (
-              <select
-                aria-label="Responsável"
-                disabled={busy || closed}
-                value={request.assigned_to || ""}
-                onChange={(e) => void update({ assigned_to: e.target.value || null })}
-              >
-                <option value="">Ninguém</option>
-                {team.map((member) => (
-                  <option value={member.id} key={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
+              <>
+                <p className="side-value">{request.assigned_name || "Ninguém (na fila do RH)"}</p>
+                {!closed && (
+                  <button className="icon-text side-transfer" disabled={busy} onClick={() => setTransferring(true)}>
+                    <ArrowRightLeft size={14} />
+                    Transferir atendimento
+                  </button>
+                )}
+              </>
             ) : (
               <p className="side-value">{request.assigned_name || "Aguardando o RH"}</p>
             )}
@@ -992,6 +1079,19 @@ function RequestDetail({
           </details>
         </aside>
       </div>
+      {transferring && (
+        <TransferDialog
+          request={request}
+          user={user}
+          team={team}
+          onClose={() => setTransferring(false)}
+          onDone={() => {
+            setTransferring(false);
+            void load();
+            onUpdated();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1323,10 +1423,15 @@ export default function CentralApp() {
   const [success, setSuccess] = useState<Request | null>(null);
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   // Só compara depois da primeira carga real da fila (antes dela a lista está vazia).
-  const ticketAlerts = useTicketAlerts(requests, user?.role === "rh" && syncedAt !== null, (id) => {
-    setView("requests");
-    setActive(id);
-  });
+  const ticketAlerts = useTicketAlerts(
+    requests,
+    user?.role === "rh" && syncedAt !== null,
+    (id) => {
+      setView("requests");
+      setActive(id);
+    },
+    user?.id,
+  );
   const [whatsappHealth, setWhatsappHealth] = useState<WhatsappHealth | null>(null);
   async function refresh() {
     try {
@@ -1620,8 +1725,6 @@ export default function CentralApp() {
               <AlertSettings
                 sound={ticketAlerts.sound}
                 toggleSound={ticketAlerts.toggleSound}
-                reminder={ticketAlerts.reminder}
-                toggleReminder={ticketAlerts.toggleReminder}
                 test={ticketAlerts.test}
               />
             }

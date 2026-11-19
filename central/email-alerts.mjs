@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import nodemailer from "nodemailer";
 
-// Avisos por e-mail para a equipe do RH: chamado novo e prazo crítico.
+// Avisos por e-mail para a equipe do RH: chamado novo (na hora) e um resumo
+// diário dos prazos (vencidos, perto do fim, 1ª resposta atrasada, sem responsável).
 // Fica desligado até o .env.local ter SMTP_HOST e ALERTA_EMAILS.
 // O e-mail leva só protocolo, assunto, nome, canal e prazo: nunca o texto do
 // chamado (pode ter dado de saúde, salário etc.). O conteúdo fica na central.
@@ -42,11 +43,19 @@ export function emailConfig(env) {
     from: settings.SMTP_FROM || settings.SMTP_USER || "",
     recipients,
     centralUrl: String(settings.CENTRAL_URL || "http://127.0.0.1:45873").replace(/\/+$/, ""),
-    // "novo,critico" (padrão) — dá para desligar um dos dois.
-    events: String(settings.ALERTA_EMAIL_EVENTOS || "novo,critico")
+    // "novo,resumo" (padrão) — dá para desligar um dos dois. "critico" é o nome antigo de "resumo".
+    events: String(settings.ALERTA_EMAIL_EVENTOS || "novo,resumo")
       .split(",")
-      .map((s) => s.trim()),
+      .map((s) => (s.trim() === "critico" ? "resumo" : s.trim())),
+    // Hora do resumo diário dos prazos (dias úteis, fuso de MS): "8" ou "8:30".
+    digestMinute: digestMinute(settings.ALERTA_RESUMO_HORA),
   };
+}
+
+function digestMinute(value) {
+  const m = String(value || "8").match(/^(\d{1,2})(?::(\d{2}))?$/);
+  const minute = m ? Number(m[1]) * 60 + Number(m[2] || 0) : 8 * 60;
+  return minute < 24 * 60 ? minute : 8 * 60;
 }
 
 const escapeHtml = (value) =>
@@ -105,9 +114,67 @@ export function alertMessage(request, kind, centralUrl) {
   return { subject, text, html };
 }
 
+export const DIGEST_GROUPS = [
+  ["vencidos", "Prazo estourado", "#b3261e"],
+  ["primeira", "1ª resposta atrasada", "#b3261e"],
+  ["perto", "Prazo perto do fim", "#c96a12"],
+  ["semResponsavel", "Sem responsável", "#841c11"],
+];
+
+/**
+ * Resumo diário dos prazos: um e-mail só, com os chamados que pedem atenção.
+ * groups: { vencidos, primeira, perto, semResponsavel } — listas de chamados
+ * { protocol, subject, requester_name, channel, due_at }. Um chamado pode
+ * aparecer em mais de um grupo. Devolve null quando não há nada a avisar.
+ */
+export function digestMessage(groups, centralUrl, dayLabel) {
+  const sections = DIGEST_GROUPS.map(([key, title, color]) => ({ title, color, items: groups[key] || [] })).filter(
+    (s) => s.items.length,
+  );
+  if (!sections.length) return null;
+  const protocols = new Set(sections.flatMap((s) => s.items.map((r) => r.protocol)));
+  const [y, mo, d] = String(dayLabel).split("-");
+  const day = d ? `${d}/${mo}/${y}` : "";
+  const count = protocols.size === 1 ? "1 chamado pede atenção" : `${protocols.size} chamados pedem atenção`;
+  const subject = `[Central RH] Resumo dos prazos${day ? ` de ${day}` : ""}: ${count}`;
+  const line = (r) => `${clean(r.protocol)} · ${clean(r.subject)} · ${clean(r.requester_name)} · prazo ${when(r.due_at)}`;
+  const text = [
+    `Resumo dos prazos${day ? ` · ${day}` : ""}`,
+    "",
+    ...sections.flatMap((s) => [`${s.title} (${s.items.length})`, ...s.items.map((r) => `- ${line(r)}`), ""]),
+    `Abrir a central: ${centralUrl}`,
+    "",
+    "Resumo automático da Central de Relacionamentos Frizelo, uma vez por dia útil. O conteúdo dos chamados fica só na central.",
+  ].join("\n");
+  const html = `<div style="font-family:Arial,sans-serif;max-width:620px;color:#2b211e">
+  <div style="border-left:4px solid #841c11;padding:4px 0 4px 14px;margin-bottom:16px">
+    <div style="font-size:12px;color:#7a6a64;text-transform:uppercase;letter-spacing:.5px">Central de Relacionamentos Frizelo</div>
+    <div style="font-size:20px;font-weight:bold;color:#841c11">Resumo dos prazos${day ? ` · ${escapeHtml(day)}` : ""}</div>
+    <div style="font-size:14px;color:#7a6a64">${escapeHtml(count)}</div>
+  </div>
+  ${sections
+    .map(
+      (s) => `<div style="font-size:15px;font-weight:bold;color:${s.color};margin:18px 0 6px">${escapeHtml(s.title)} (${s.items.length})</div>
+  <table style="border-collapse:collapse;font-size:13px;width:100%">
+    ${s.items
+      .map(
+        (r) =>
+          `<tr><td style="padding:5px 10px 5px 0;font-weight:bold;white-space:nowrap">${escapeHtml(clean(r.protocol))}</td><td style="padding:5px 10px 5px 0">${escapeHtml(clean(r.subject))}<br><span style="color:#7a6a64">${escapeHtml(clean(r.requester_name))} · ${escapeHtml(clean(r.channel))}</span></td><td style="padding:5px 0;white-space:nowrap;color:#7a6a64">${escapeHtml(when(r.due_at))}</td></tr>`,
+      )
+      .join("")}
+  </table>`,
+    )
+    .join("\n  ")}
+  <p style="margin:22px 0"><a href="${escapeHtml(centralUrl)}" style="background:#841c11;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold">Abrir a central</a></p>
+  <p style="font-size:12px;color:#7a6a64">Resumo automático, uma vez por dia útil. O conteúdo dos chamados fica só na central.</p>
+</div>`;
+  return { subject: subject.slice(0, 200), text, html };
+}
+
 /** Envio com fila simples: um e-mail por vez, erro só vai para o log. */
 export function createEmailAlerts({ config = emailConfig(), log = console.log, transport } = {}) {
-  if (!config.enabled) return { enabled: false, notify: async () => false, verify: async () => false };
+  if (!config.enabled)
+    return { enabled: false, digestMinute: config.digestMinute, notify: async () => false, digest: async () => false, verify: async () => false };
   const mailer =
     transport ||
     nodemailer.createTransport({
@@ -119,21 +186,28 @@ export function createEmailAlerts({ config = emailConfig(), log = console.log, t
       disableUrlAccess: true,
     });
   let queue = Promise.resolve();
-  async function notify(request, kind) {
-    const event = kind === "novo" ? "novo" : "critico";
-    if (!config.events.includes(event)) return false;
-    const message = alertMessage(request, kind, config.centralUrl);
+  function send(message, what) {
     const job = queue.then(async () => {
       try {
         await mailer.sendMail({ from: config.from, to: config.recipients, ...message });
         return true;
       } catch (e) {
-        log(`[email] falha ao avisar ${request.protocol} (${kind}): ${e.message}`);
+        log(`[email] falha ao enviar ${what}: ${e.message}`);
         return false;
       }
     });
     queue = job;
     return job;
   }
-  return { enabled: true, notify, verify: () => mailer.verify() };
+  /** Aviso na hora: só chamado novo. Prazos vão no resumo diário (digest). */
+  async function notify(request, kind) {
+    if (kind !== "novo" || !config.events.includes("novo")) return false;
+    return send(alertMessage(request, kind, config.centralUrl), `aviso de ${request.protocol} (${kind})`);
+  }
+  async function digest(groups, dayLabel) {
+    if (!config.events.includes("resumo")) return false;
+    const message = digestMessage(groups, config.centralUrl, dayLabel);
+    return message ? send(message, `resumo dos prazos de ${dayLabel}`) : false;
+  }
+  return { enabled: true, digestMinute: config.digestMinute, notify, digest, verify: () => mailer.verify() };
 }

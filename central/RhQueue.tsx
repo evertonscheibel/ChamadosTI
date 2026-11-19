@@ -23,6 +23,7 @@ export type QueueRequest = {
   first_response_at?: string | null;
   needs_reply?: boolean;
   last_message_at?: string | null;
+  transfer?: { id: number; by_id: string; by_name: string };
 };
 /** Ainda sem nenhuma resposta pública do RH. */
 export const unanswered = (r: QueueRequest) => !!r.first_response && r.first_response.level !== "respondido";

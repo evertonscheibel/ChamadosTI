@@ -4,26 +4,26 @@ import {
   BellOff,
   BellRing,
   X,
-  AlertTriangle,
   Inbox,
   WifiOff,
-  Repeat,
+  ArrowRightLeft,
 } from "lucide-react";
 import { MessageSquareText } from "lucide-react";
-import { displayName, remaining, type QueueRequest } from "./RhQueue";
+import { displayName, type QueueRequest } from "./RhQueue";
 
+// Avisos na tela só para o que é novo: chamado novo, mensagem nova do colaborador e
+// chamado transferido para quem está usando a central.
+// Prazo não gera aviso nem som: fica em destaque na fila (aba Atrasados e cores do
+// prazo) e vai no resumo diário por e-mail.
 type Alert = {
   key: string;
   id: string;
-  kind: "novo" | "mensagem" | "laranja" | "vermelho";
+  kind: "novo" | "mensagem" | "transferido";
   title: string;
   body: string;
 };
-type Seen = { level: number; last: string; late: boolean };
-const RANK = { verde: 0, amarelo: 1, laranja: 2, vermelho: 3 } as const;
+type Seen = { last: string; transfer: number };
 const SOUND_KEY = "central-alert-sound";
-const REMINDER_KEY = "central-alert-reminder";
-const REMINDER_MS = 2 * 60000;
 const BASE_TITLE = "Central de Relacionamentos | Frizelo Frigoríficos";
 
 function beep(urgent: boolean) {
@@ -96,25 +96,26 @@ const store = (key: string, on: boolean) => {
 };
 
 /**
- * Compara cada atualização da fila com a anterior e gera avisos de chamado novo
- * e de prazo crítico: aviso na tela, som, pop-up do Windows e título piscando.
- * Enquanto houver chamado recebido sem ninguém, lembra a cada 2 minutos.
+ * Compara cada atualização da fila com a anterior e avisa uma vez de chamado
+ * novo e de mensagem nova do colaborador: aviso na tela, som, pop-up do Windows
+ * e título piscando. Não repete: o que continua pendente fica em destaque na
+ * fila e no título da aba (quantos chamados estão sem responsável).
  */
 export function useTicketAlerts(
   requests: QueueRequest[],
   active: boolean,
   onOpen?: (id: string) => void,
+  userId?: string,
 ) {
   const seen = useRef<Map<string, Seen> | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [sound, setSound] = useState(() => stored(SOUND_KEY));
-  const [reminder, setReminder] = useState(() => stored(REMINDER_KEY));
   const [flash, setFlash] = useState<string | null>(null);
   const openRef = useRef(onOpen);
   openRef.current = onOpen;
-  const waiting = active
-    ? requests.filter((r) => r.status === "Recebida" && !r.assigned_to)
-    : [];
+  const waitingCount = active
+    ? requests.filter((r) => r.status === "Recebida" && !r.assigned_to).length
+    : 0;
 
   useEffect(() => {
     if (!active) {
@@ -122,11 +123,9 @@ export function useTicketAlerts(
       return;
     }
     const open = requests.filter((r) => r.status !== "Concluída");
-    const level = (r: QueueRequest) => (r.sla ? RANK[r.sla.level] : -1);
     const snapshot = (r: QueueRequest): Seen => ({
-      level: level(r),
       last: r.last_message_at || "",
-      late: r.first_response?.level === "atrasado",
+      transfer: r.transfer?.id ?? 0,
     });
     // Primeira carga (ou recarga da página): só memoriza, sem avisar do que já estava na fila.
     if (!seen.current) {
@@ -136,27 +135,8 @@ export function useTicketAlerts(
     const fresh: Alert[] = [];
     for (const r of open) {
       const previous = seen.current.get(r.id);
-      const before = previous?.level;
-      const now = level(r);
       const current = snapshot(r);
-      if (previous && r.needs_reply && current.last > previous.last)
-        // Colaborador escreveu de novo num chamado que já existia.
-        fresh.push({
-          key: `${r.id}-msg-${current.last}`,
-          id: r.id,
-          kind: "mensagem",
-          title: `Nova mensagem: ${r.protocol}`,
-          body: `${displayName(r)} · ${r.subject}`,
-        });
-      if (previous && current.late && !previous.late)
-        fresh.push({
-          key: `${r.id}-primeira`,
-          id: r.id,
-          kind: "vermelho",
-          title: `1ª resposta atrasada: ${r.protocol}`,
-          body: `${r.subject} · ${displayName(r)} ainda não recebeu resposta`,
-        });
-      if (before === undefined)
+      if (!previous)
         fresh.push({
           key: `${r.id}-novo`,
           id: r.id,
@@ -164,16 +144,29 @@ export function useTicketAlerts(
           title: `Novo chamado ${r.protocol}`,
           body: `${r.subject} · ${displayName(r)}`,
         });
-      else if (now >= RANK.laranja && now > before)
+      else if (
+        // Alguém transferiu o chamado para mim.
+        userId &&
+        r.transfer &&
+        current.transfer > previous.transfer &&
+        r.assigned_to === userId &&
+        r.transfer.by_id !== userId
+      )
         fresh.push({
-          key: `${r.id}-${now}`,
+          key: `${r.id}-transfer-${current.transfer}`,
           id: r.id,
-          kind: now === RANK.vermelho ? "vermelho" : "laranja",
-          title:
-            now === RANK.vermelho
-              ? `Prazo estourado: ${r.protocol}`
-              : `Prazo perto do fim: ${r.protocol}`,
-          body: `${r.subject} · ${r.due_at ? remaining(r.due_at) : ""}`,
+          kind: "transferido",
+          title: `Chamado transferido para você: ${r.protocol}`,
+          body: `${r.subject} · por ${r.transfer.by_name}`,
+        });
+      else if (r.needs_reply && current.last > previous.last)
+        // Colaborador escreveu de novo num chamado que já existia.
+        fresh.push({
+          key: `${r.id}-msg-${current.last}`,
+          id: r.id,
+          kind: "mensagem",
+          title: `Nova mensagem: ${r.protocol}`,
+          body: `${displayName(r)} · ${r.subject}`,
         });
       seen.current.set(r.id, current);
     }
@@ -184,40 +177,16 @@ export function useTicketAlerts(
         ...current.filter((a) => !fresh.some((f) => f.key === a.key)),
       ].slice(0, 5),
     );
-    if (sound) beep(fresh.some((a) => a.kind === "vermelho"));
+    if (sound) beep(false);
     for (const a of fresh)
-      popup(a.title, a.body, a.key, a.kind !== "laranja", () =>
+      popup(a.title, a.body, a.key, a.kind !== "mensagem", () =>
         openRef.current?.(a.id),
       );
     if (!document.hasFocus())
       setFlash(
-        {
-          novo: "🔔 Novo chamado",
-          mensagem: "💬 Nova mensagem",
-          laranja: "⚠️ Prazo crítico",
-          vermelho: "⚠️ Prazo crítico",
-        }[fresh[0].kind],
+        { novo: "🔔 Novo chamado", mensagem: "💬 Nova mensagem", transferido: "↪ Chamado transferido" }[fresh[0].kind],
       );
-  }, [requests, active]);
-
-  // Lembrete: chamado recebido e ninguém assumiu. Repete a cada 2 minutos até alguém pegar.
-  const waitingCount = waiting.length;
-  useEffect(() => {
-    if (!active || !reminder || !waitingCount) return;
-    const timer = window.setInterval(() => {
-      if (sound) beep(false);
-      popup(
-        waitingCount === 1
-          ? "1 chamado aguardando alguém assumir"
-          : `${waitingCount} chamados aguardando alguém assumir`,
-        "Abra a central para assumir.",
-        "lembrete-fila",
-        false,
-      );
-      if (!document.hasFocus()) setFlash(`🔔 ${waitingCount} sem responsável`);
-    }, REMINDER_MS);
-    return () => window.clearInterval(timer);
-  }, [active, reminder, sound, waitingCount]);
+  }, [requests, active, userId]);
 
   // Título da aba: quantos chamados chegaram e ninguém pegou; pisca enquanto a central está sem foco.
   useEffect(() => {
@@ -244,10 +213,6 @@ export function useTicketAlerts(
     store(SOUND_KEY, !sound);
     setSound(!sound);
   };
-  const toggleReminder = () => {
-    store(REMINDER_KEY, !reminder);
-    setReminder(!reminder);
-  };
   const dismiss = (key: string) =>
     setAlerts((current) => current.filter((a) => a.key !== key));
   const test = () => {
@@ -265,15 +230,7 @@ export function useTicketAlerts(
       ].slice(0, 5),
     );
   };
-  return {
-    alerts,
-    dismiss,
-    sound,
-    toggleSound,
-    reminder,
-    toggleReminder,
-    test,
-  };
+  return { alerts, dismiss, sound, toggleSound, test };
 }
 
 export function AlertToasts({
@@ -299,10 +256,10 @@ export function AlertToasts({
           >
             {a.kind === "novo" ? (
               <Inbox size={18} />
-            ) : a.kind === "mensagem" ? (
-              <MessageSquareText size={18} />
+            ) : a.kind === "transferido" ? (
+              <ArrowRightLeft size={18} />
             ) : (
-              <AlertTriangle size={18} />
+              <MessageSquareText size={18} />
             )}
             <span>
               <strong>{a.title}</strong>
@@ -326,14 +283,10 @@ export function AlertToasts({
 export function AlertSettings({
   sound,
   toggleSound,
-  reminder,
-  toggleReminder,
   test,
 }: {
   sound: boolean;
   toggleSound: () => void;
-  reminder: boolean;
-  toggleReminder: () => void;
   test: () => void;
 }) {
   const supported = "Notification" in window;
@@ -361,14 +314,6 @@ export function AlertSettings({
       >
         {sound ? <Bell size={15} /> : <BellOff size={15} />}
         {sound ? "Som ligado" : "Som desligado"}
-      </button>
-      <button
-        className="icon-text"
-        onClick={toggleReminder}
-        title="Enquanto houver chamado recebido sem responsável, avisa de novo a cada 2 minutos"
-      >
-        <Repeat size={15} />
-        {reminder ? "Lembrete a cada 2 min" : "Lembrete desligado"}
       </button>
       <button
         className="icon-text"

@@ -3229,7 +3229,8 @@ button.queue-row:hover .queue-chevron {
   box-shadow: 0 10px 30px rgba(40, 30, 20, 0.16);
   animation: toast-in 0.22s ease-out;
 }
-.toast-laranja {
+.toast-laranja,
+.toast-transferido {
   border-left-color: var(--sla-laranja);
 }
 .toast-vermelho {
@@ -3251,7 +3252,8 @@ button.queue-row:hover .queue-chevron {
   margin-top: 1px;
   color: var(--brand);
 }
-.toast-laranja .toast-body svg {
+.toast-laranja .toast-body svg,
+.toast-transferido .toast-body svg {
   color: var(--sla-laranja);
 }
 .toast-vermelho .toast-body svg {
@@ -3944,4 +3946,8 @@ button.q-main:focus-visible {
 .bubble-files .media-file:hover {
   border-color: var(--brand);
   color: var(--brand);
+}
+.side-transfer {
+  margin-top: 8px;
+  font-size: 12.5px;
 }

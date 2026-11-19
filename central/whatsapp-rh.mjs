@@ -257,6 +257,17 @@ export function withinOfficeHours(ms, { officeHours = [7 * 60, 17 * 60], holiday
   const minute = Math.floor((ms - OFFSET - day * DAY) / 60000);
   return minute >= officeHours[0] && minute < officeHours[1];
 }
+/**
+ * Resumo diário: devolve o dia local ("AAAA-MM-DD") quando já passou da hora do
+ * resumo num dia útil e o resumo desse dia ainda não saiu; senão, null.
+ */
+export function digestDay(ms, { minute = 8 * 60, holidays = [], lastDay = null } = {}) {
+  const day = localDay(ms);
+  if (!businessDay(day, holidays)) return null;
+  if (Math.floor((ms - OFFSET - day * DAY) / 60000) < minute) return null;
+  const label = new Date(day * DAY).toISOString().slice(0, 10);
+  return label === lastDay ? null : label;
+}
 const WEEKDAYS = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const pad = (n) => String(n).padStart(2, "0");
 /** "seg, 17/11 às 15h" (ou "15h30") no fuso de MS. */

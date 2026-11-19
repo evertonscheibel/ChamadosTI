@@ -91,6 +91,7 @@ import {
   rememberedText,
   ticketTheme,
   withinOfficeHours,
+  digestDay,
   businessElapsed,
   awaitingEmployeeText,
   awaitingReminderText,
@@ -522,14 +523,17 @@ function list(user) {
     `SELECT r.*, u.name requester_name, u.unit, u.department, a.name assigned_name,
        (SELECT MIN(m.created_at) FROM messages m JOIN users mu ON mu.id=m.user_id WHERE m.request_id=r.id AND m.internal=0 AND mu.role='rh') first_response_at,
        (SELECT mu.role FROM messages m JOIN users mu ON mu.id=m.user_id WHERE m.request_id=r.id AND m.internal=0 ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) last_role,
-       (SELECT MAX(m.created_at) FROM messages m WHERE m.request_id=r.id AND m.internal=0) last_message_at
+       (SELECT MAX(m.created_at) FROM messages m WHERE m.request_id=r.id AND m.internal=0) last_message_at,
+       (SELECT json_object('id',h.id,'by_id',h.user_id,'by_name',h.actor_name) FROM history h WHERE h.request_id=r.id AND h.kind='transfer' ORDER BY h.id DESC LIMIT 1) last_transfer
      FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN users a ON a.id=r.assigned_to ${clause} ORDER BY r.created_at DESC`,
   );
   const { holidays, officeHours, firstResponseHours } = whatsappConfig();
   const now = Date.now();
   return (user.role === "rh" ? statement.all() : statement.all(user.id)).map(
-    ({ last_role, ...r }) => ({
+    ({ last_role, last_transfer, ...r }) => ({
       ...r,
+      // Última transferência (só o RH vê): o painel avisa quem recebeu o chamado.
+      transfer: user.role === "rh" && last_transfer ? JSON.parse(last_transfer) : undefined,
       fields: JSON.parse(r.fields),
       // Criticidade pelo prazo útil consumido (verde/amarelo/laranja/vermelho).
       sla: r.status !== "Concluída" && r.due_at ? slaStatus(r.created_at, r.due_at, now, holidays) : null,
@@ -1328,40 +1332,72 @@ async function syncChatwootTickets(now = Date.now(), onlyId = null) {
 const syncChatwootTicket = (id) =>
   void syncChatwootTickets(Date.now(), id).catch((e) => console.error("Chamado no Chatwoot:", e.message));
 /**
- * A cada 5 minutos: e-mail quando um chamado entra em laranja ou vermelho, e
- * lembrete no WhatsApp para quem não respondeu o RH em 2 dias úteis.
+ * Chamados que pedem atenção, para o resumo diário dos prazos. Quem está
+ * "Aguardando colaborador" não entra: a vez é do colaborador, não do RH.
+ */
+function digestGroups(open, now, { holidays, officeHours, firstResponseHours }) {
+  const groups = { vencidos: [], primeira: [], perto: [], semResponsavel: [] };
+  for (const request of open) {
+    if (request.status === "Aguardando colaborador") continue;
+    const data = alertRequest(request.id);
+    if (!data) continue;
+    const sla = request.due_at ? slaStatus(request.created_at, request.due_at, now, holidays) : null;
+    if (sla?.level === "vermelho") groups.vencidos.push(data);
+    else if (sla?.level === "laranja") groups.perto.push(data);
+    if (!request.first_response_at) {
+      const first = firstResponseStatus(request.created_at, null, now, { hours: firstResponseHours, officeHours, holidays });
+      if (first?.level === "atrasado") groups.primeira.push(data);
+    }
+    if (!request.assigned_to) groups.semResponsavel.push(data);
+  }
+  for (const list of Object.values(groups)) list.sort((a, b) => String(a.due_at).localeCompare(String(b.due_at)));
+  return groups;
+}
+
+/**
+ * Resumo diário dos prazos por e-mail: uma vez por dia útil, a partir da hora
+ * configurada (ALERTA_RESUMO_HORA, padrão 8h). O dia fica gravado antes do
+ * envio, para a central reiniciada não mandar o mesmo resumo duas vezes.
+ */
+function dailyDigest(open, now, config) {
+  if (!emailAlerts.enabled) return;
+  const lastDay = db.prepare("SELECT value FROM settings WHERE key='rh_digest_day'").get()?.value ?? null;
+  const day = digestDay(now, { minute: emailAlerts.digestMinute, holidays: config.holidays, lastDay });
+  if (!day) return;
+  db.prepare("INSERT INTO settings (key,value) VALUES ('rh_digest_day',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(day);
+  void emailAlerts.digest(digestGroups(open, now, config), day);
+}
+
+/**
+ * A cada 5 minutos: atualiza o nível do prazo de cada chamado (o painel e o
+ * Chatwoot mostram em destaque), manda o resumo diário dos prazos por e-mail e
+ * o lembrete no WhatsApp para quem não respondeu o RH em 2 dias úteis.
+ * Prazo não gera e-mail nem aviso por chamado: só o resumo diário.
  */
 async function automaticAlerts(now = Date.now()) {
-  const { holidays, officeHours, firstResponseHours } = whatsappConfig();
+  const config = whatsappConfig();
+  const { holidays, officeHours, firstResponseHours } = config;
   const open = db
     .prepare(
-      `SELECT r.id,r.protocol,r.created_at,r.due_at,r.alert_level,r.status,r.awaiting_since,r.reminder_sent_at,r.chatwoot_conversation_id,r.first_response_alerted,
+      `SELECT r.id,r.protocol,r.created_at,r.due_at,r.alert_level,r.status,r.assigned_to,r.awaiting_since,r.reminder_sent_at,r.chatwoot_conversation_id,r.first_response_alerted,
          (SELECT MIN(m.created_at) FROM messages m JOIN users mu ON mu.id=m.user_id WHERE m.request_id=r.id AND m.internal=0 AND mu.role='rh') first_response_at
        FROM requests r WHERE r.status<>'Concluída'`,
     )
     .all();
+  try {
+    dailyDigest(open, now, config);
+  } catch (e) {
+    console.error("Resumo diário dos prazos:", e.message);
+  }
   for (const request of open) {
-    // 1ª resposta estourou o prazo sem nenhuma resposta do RH: e-mail uma vez.
     if (!request.first_response_alerted && !request.first_response_at) {
       const first = firstResponseStatus(request.created_at, null, now, { hours: firstResponseHours, officeHours, holidays });
-      if (first?.level === "atrasado") {
-        db.prepare("UPDATE requests SET first_response_alerted=1 WHERE id=?").run(request.id);
-        const data = alertRequest(request.id);
-        if (data) void emailAlerts.notify(data, "primeira");
-      }
+      if (first?.level === "atrasado") db.prepare("UPDATE requests SET first_response_alerted=1 WHERE id=?").run(request.id);
     }
     const sla = request.due_at ? slaStatus(request.created_at, request.due_at, now, holidays) : null;
     const rank = sla ? LEVEL_RANK[sla.level] : -1;
-    if (request.alert_level === null) {
-      // Primeira verificação deste chamado: só memoriza (não avisa do que já estava assim).
+    if (request.alert_level === null || rank > request.alert_level)
       db.prepare("UPDATE requests SET alert_level=? WHERE id=?").run(rank, request.id);
-    } else if (rank > request.alert_level) {
-      db.prepare("UPDATE requests SET alert_level=? WHERE id=?").run(rank, request.id);
-      if (rank >= LEVEL_RANK.laranja) {
-        const data = alertRequest(request.id);
-        if (data) void emailAlerts.notify(data, sla.level);
-      }
-    }
     if (
       request.status === "Aguardando colaborador" &&
       request.awaiting_since &&
@@ -2436,6 +2472,19 @@ http
                 .get(input.assigned_to)
             )
               fail(400, "Responsável inválido.");
+            // Transferência: { to: id da atendente do RH ou null (volta para a fila), reason }.
+            const transfer = input.transfer;
+            if (transfer !== undefined) {
+              if (!transfer || typeof transfer !== "object") fail(400, "Transferência inválida.");
+              if (request.status === "Concluída") fail(400, "Reabra o chamado antes de transferir.");
+              const to = transfer.to ?? null;
+              if (to !== null && !db.prepare("SELECT id FROM users WHERE id=? AND role='rh'").get(to))
+                fail(400, "Escolha para quem transferir.");
+              if (to === (request.assigned_to ?? null)) fail(400, "O chamado já está com essa pessoa.");
+              const reason = typeof transfer.reason === "string" ? transfer.reason.trim() : "";
+              if (reason.length < 3 || reason.length > 500)
+                fail(400, "Explique em poucas palavras o motivo da transferência.");
+            }
             if (
               input.status === "Concluída" &&
               !db
@@ -2548,6 +2597,26 @@ http
                           .get(input.assigned_to)?.name
                       : "Sem responsável",
                   },
+                );
+              }
+              if (transfer !== undefined) {
+                const to = transfer.to ?? null;
+                const name = (userId) =>
+                  userId ? db.prepare("SELECT name FROM users WHERE id=?").get(userId)?.name : "Sem responsável";
+                const from = name(request.assigned_to);
+                const target = to ? name(to) : "a fila do RH (sem responsável)";
+                const reason = transfer.reason.trim();
+                db.prepare("UPDATE requests SET assigned_to=? WHERE id=?").run(to, id);
+                history(id, user, `Atendimento transferido para ${target}`, "transfer", { from, to: target, motivo: reason }, 1);
+                // Nota interna na conversa: quem recebe vê o motivo junto com as mensagens.
+                db.prepare(
+                  "INSERT INTO messages (id,request_id,user_id,body,created_at,internal) VALUES (?,?,?,?,?,1)",
+                ).run(
+                  randomUUID(),
+                  id,
+                  user.id,
+                  `${request.assigned_to ? `Atendimento transferido de ${from} para ${target}` : `Atendimento encaminhado para ${target}`}.\nMotivo: ${reason}`,
+                  new Date().toISOString(),
                 );
               }
               db.prepare("UPDATE requests SET updated_at=? WHERE id=?").run(

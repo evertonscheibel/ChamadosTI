@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  digestDay,
   businessDeadline,
   businessElapsed,
   slaStatus,
@@ -353,4 +354,18 @@ test("áudio nos dados pessoais pede para digitar, sem perder a etapa", () => {
 test("áudio no meio do chamado entra no chamado", () => {
   assert.equal(nextStep({ stage: "chamado", data: {} }, "", { hasAttachment: true, hasAudio: true }).append, true);
   assert.equal(nextStep({ stage: "tema", theme: 3, data: {} }, "", { hasAttachment: true, hasAudio: true }).open, true);
+});
+
+test("resumo diário: dia útil, depois da hora, uma vez por dia", () => {
+  const at = (iso) => Date.parse(iso);
+  // Sexta, 20/11/2026, 07:59 em MS (UTC-4): ainda não.
+  assert.equal(digestDay(at("2026-11-20T11:59:00Z")), null);
+  assert.equal(digestDay(at("2026-11-20T12:00:00Z")), "2026-11-20");
+  assert.equal(digestDay(at("2026-11-20T18:00:00Z"), { lastDay: "2026-11-20" }), null);
+  // Sábado e feriado: não sai.
+  assert.equal(digestDay(at("2026-11-21T13:00:00Z")), null);
+  assert.equal(digestDay(at("2026-11-20T13:00:00Z"), { holidays: ["2026-11-20"] }), null);
+  // 23h em MS ainda é o mesmo dia local (03h UTC do dia seguinte).
+  assert.equal(digestDay(at("2026-11-20T03:30:00Z"), { lastDay: "2026-11-19" }), null);
+  assert.equal(digestDay(at("2026-11-21T02:30:00Z"), { lastDay: "2026-11-19" }), "2026-11-20");
 });

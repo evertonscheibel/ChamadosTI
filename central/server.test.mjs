@@ -395,6 +395,20 @@ test("Central Frizelo: privacy, shared workflow, access codes and persistence", 
       ).status,
       400,
     );
+    // Transferência: pede destino válido e motivo; vira nota interna e histórico.
+    const transfer = (data) =>
+      call(`/requests/${request.id}`, { cookie: rh, method: "PATCH", data: { transfer: data } });
+    assert.equal((await transfer({ to: "demo-rh", reason: "Mesma pessoa" })).status, 400);
+    assert.equal((await transfer({ to: "demo-colaborador", reason: "Não é do RH" })).status, 400);
+    assert.equal((await transfer({ to: null, reason: "" })).status, 400);
+    assert.equal((await transfer({ to: null, reason: "Férias da atendente" })).status, 200);
+    const transferred = (await call(`/requests/${request.id}`, { cookie: rh })).body;
+    assert.equal(transferred.request.assigned_to, null);
+    assert.match(transferred.messages.at(-1).body, /transferido.*\n.*Férias da atendente/);
+    assert.equal(transferred.messages.at(-1).internal, 1);
+    assert.ok(transferred.history.some((row) => row.kind === "transfer"));
+    assert.equal((await call(`/requests/${request.id}`, { cookie: employee })).body.messages.length, 0);
+    assert.equal((await transfer({ to: "demo-rh", reason: "Volta para a demo" })).status, 200);
     assert.equal(
       (
         await call(`/requests/${request.id}/messages`, {
@@ -432,7 +446,7 @@ test("Central Frizelo: privacy, shared workflow, access codes and persistence", 
     const internalDetail = (
       await call(`/requests/${request.id}`, { cookie: rh })
     ).body;
-    assert.equal(internalDetail.messages.length, 1);
+    assert.equal(internalDetail.messages.length, 3);
     const hidden = (await call(`/requests/${request.id}`, { cookie: employee }))
       .body;
     assert.equal(hidden.messages.length, 0);
