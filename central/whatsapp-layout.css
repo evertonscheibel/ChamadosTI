@@ -1,0 +1,547 @@
+/* ==========================================================
+   Chamados no estilo WhatsApp Web: conversas à esquerda,
+   conversa aberta à direita (só perfil RH).
+   ========================================================== */
+.main-shell:has(.wa) {
+  max-width: none;
+  padding: 0;
+}
+body:has(.wa) .site-footer {
+  display: none;
+}
+.wa {
+  --wa-bg: #efeae2;
+  --wa-us: #f3e1dc;
+  --wa-them: #fff;
+  --wa-unread: #25a244;
+  display: grid;
+  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
+  height: calc(100dvh - var(--wa-top, 113px));
+  min-height: 480px;
+  overflow: hidden;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.wa-list {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.wa-list-inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.wa-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 16px 8px;
+}
+.wa-list-head h1 {
+  font-size: 22px;
+  letter-spacing: -0.4px;
+}
+.wa-list-tools,
+.wa-list-tools .alert-settings {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.wa-list-tools .alert-settings .icon-text {
+  font-size: 11.5px;
+  padding: 5px 7px;
+}
+.icon-only {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-soft);
+}
+.icon-only:hover,
+.icon-only[aria-pressed="true"] {
+  background: var(--cream);
+  color: var(--ink);
+}
+.wa-list .notice {
+  margin: 0 12px 8px;
+}
+.wa-search {
+  display: flex;
+  gap: 6px;
+  padding: 4px 12px 8px;
+}
+.wa-search label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: var(--cream);
+  color: var(--ink-soft);
+}
+.wa-search input {
+  border: 0;
+  background: transparent;
+  padding: 9px 0;
+  font-size: 13.5px;
+  min-width: 0;
+}
+.wa-search input:focus {
+  outline: none;
+}
+.wa-search label:focus-within {
+  box-shadow: 0 0 0 2px rgba(132, 28, 17, 0.18);
+}
+.wa-search label button {
+  display: inline-flex;
+  background: none;
+  color: var(--ink-soft);
+}
+.wa-search select {
+  width: 118px;
+  padding: 8px 6px;
+  font-size: 12px;
+  border-radius: 9px;
+}
+.wa-chips {
+  display: flex;
+  gap: 6px;
+  padding: 2px 12px 10px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  border-bottom: 1px solid var(--hairline);
+}
+.wa-chips button {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--cream);
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.wa-chips button span {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.08);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.wa-chips button.alert span {
+  background: var(--brand);
+  color: #fff;
+}
+.wa-chips button.selected {
+  background: var(--brand);
+  color: #fff;
+}
+.wa-chips button.selected span {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+.wa-items {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.wa-items .queue-empty {
+  padding: 48px 20px;
+}
+.wa-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: none;
+  text-align: left;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink);
+  border-radius: 0;
+}
+.wa-item:hover {
+  background: #f7f4f0;
+}
+.wa-item.active {
+  background: var(--brand-tint);
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+.wa-avatar {
+  position: relative;
+  flex-shrink: 0;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #e5ded6;
+  color: #5c5752;
+  font-weight: 700;
+  font-size: 15px;
+}
+.wa-avatar-wa {
+  background: #dcefdc;
+  color: #1f6b3a;
+}
+.wa-avatar i {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--ink-soft);
+  border: 1px solid var(--hairline);
+}
+.wa-avatar-wa i {
+  background: var(--wa-unread);
+  color: #fff;
+  border-color: var(--surface);
+}
+.wa-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wa-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.wa-line strong {
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-line time {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.wa-line time.fresh {
+  color: var(--wa-unread);
+  font-weight: 700;
+}
+.wa-subject {
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-item.unread .wa-subject {
+  color: var(--ink);
+  font-weight: 600;
+}
+.wa-unread {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--wa-unread);
+}
+.wa-meta {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.wa-meta > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-due {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.wa-due.late,
+.wa-due.sla-vermelho {
+  color: var(--sla-vermelho);
+}
+.wa-due.sla-laranja {
+  color: var(--sla-laranja);
+}
+.wa-due.sla-amarelo {
+  color: #a17a10;
+}
+.wa-due.done {
+  color: var(--sla-verde);
+}
+
+/* Lado da conversa */
+.wa-chat {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--wa-bg);
+}
+.wa-empty {
+  margin: auto;
+  max-width: 420px;
+  text-align: center;
+  padding: 24px;
+  color: var(--ink-soft);
+}
+.wa-empty > span {
+  display: inline-flex;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--brand);
+  margin-bottom: 14px;
+}
+.wa-empty h2 {
+  color: var(--ink);
+  font-size: 22px;
+  margin-bottom: 6px;
+}
+.wa-empty small {
+  display: block;
+  margin-top: 18px;
+  font-size: 12px;
+}
+.ticket-embedded {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.ticket-embedded > .back-link {
+  display: none;
+}
+.ticket-embedded .wa-loading {
+  padding: 24px;
+}
+.ticket-embedded > .ticket-head {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+}
+.ticket-embedded .wa-avatar {
+  width: 42px;
+  height: 42px;
+}
+.ticket-embedded .ticket-title {
+  flex: 1;
+  min-width: 0;
+}
+.ticket-embedded .wa-chat-name {
+  display: block;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ticket-embedded .ticket-title h1 {
+  margin-top: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ticket-embedded .ticket-title p {
+  display: none;
+}
+.ticket-embedded .ticket-protocol {
+  font-size: 11px;
+}
+.ticket-embedded .ticket-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+.ticket-embedded .ticket-actions .button {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.ticket-embedded .ticket-actions select {
+  padding: 8px 10px;
+}
+.ticket-embedded > .notice {
+  margin: 8px 16px 0;
+}
+.ticket-embedded > .ticket-grid {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+}
+.ticket-embedded.info-open > .ticket-grid {
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+.ticket-embedded .ticket-thread {
+  min-height: 0;
+  height: 100%;
+  padding: 0;
+  gap: 0;
+  border: 0;
+  border-radius: 0;
+  background-color: var(--wa-bg);
+  background-image: radial-gradient(
+    rgba(132, 28, 17, 0.05) 1px,
+    transparent 1px
+  );
+  background-size: 18px 18px;
+}
+.ticket-embedded .thread-messages {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 6% 12px;
+}
+.ticket-embedded .bubble {
+  max-width: min(78%, 640px);
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.12);
+  border: 0;
+}
+.ticket-embedded .bubble-them {
+  background: var(--wa-them);
+  border-top-left-radius: 2px;
+}
+.ticket-embedded .bubble-us {
+  background: var(--wa-us);
+  border-top-right-radius: 2px;
+}
+.ticket-embedded .thread-closed {
+  margin: 0 16px 14px;
+}
+.ticket-embedded .composer {
+  margin: 0;
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  padding: 8px 14px 10px;
+  background: #f6f3ef;
+}
+.ticket-embedded .composer.composer-note {
+  background: #fffbea;
+}
+.ticket-embedded .composer:focus-within {
+  box-shadow: none;
+}
+.ticket-embedded .composer textarea {
+  min-height: 46px;
+  max-height: 180px;
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.ticket-embedded .ticket-side {
+  display: none;
+}
+.ticket-embedded.info-open .ticket-side {
+  display: flex;
+  position: static;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--surface);
+  border-left: 1px solid var(--hairline);
+}
+
+/* Telas médias: detalhes por cima da conversa */
+@media (max-width: 1100px) {
+  .ticket-embedded.info-open > .ticket-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ticket-embedded.info-open .ticket-side {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: min(320px, 90%);
+    z-index: 5;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  }
+}
+
+/* Celular: lista OU conversa, como no app */
+@media (max-width: 760px) {
+  .wa {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wa.wa-has-chat .wa-list {
+    display: none;
+  }
+  .wa:not(.wa-has-chat) .wa-chat {
+    display: none;
+  }
+  .ticket-embedded > .back-link {
+    display: inline-flex;
+    margin: 6px 12px 0;
+  }
+  .ticket-embedded > .ticket-head {
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 8px 10px;
+  }
+  .ticket-embedded .ticket-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .ticket-embedded .ticket-actions select {
+    order: 10;
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .ticket-embedded .ticket-actions .icon-only {
+    margin-left: auto;
+  }
+  .ticket-embedded .ticket-actions .button {
+    padding: 7px 10px;
+  }
+  .ticket-embedded .thread-messages {
+    padding: 12px 10px;
+  }
+  .ticket-embedded .bubble {
+    max-width: 88%;
+  }
+}

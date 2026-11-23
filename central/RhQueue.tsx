@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { RefreshCw, Search, ChevronRight, MessageCircle, Globe, Inbox, Headphones, X } from "lucide-react";
+import { RefreshCw, Search, ChevronRight, MessageCircle, Globe, Inbox, Headphones, X, UserRound } from "lucide-react";
 import { services, statuses } from "./catalog.mjs";
 import { api } from "./api";
 
@@ -87,6 +87,40 @@ export function Deadline({ request }: { request: QueueRequest }) {
   );
 }
 
+/** Hora da última movimentação como no WhatsApp: hoje = 14:32, ontem = "Ontem", depois dd/mm. */
+export function chatTime(iso?: string | null) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const tz = "America/Cuiaba";
+  const dia = (x: Date) => x.toLocaleDateString("pt-BR", { timeZone: tz });
+  const hoje = new Date();
+  const ontem = new Date(Date.now() - 86400000);
+  if (dia(d) === dia(hoje))
+    return d.toLocaleTimeString("pt-BR", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  if (dia(d) === dia(ontem)) return "Ontem";
+  return d.toLocaleDateString("pt-BR", {
+    timeZone: tz,
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
+/** Iniciais para o avatar; telefone (contato do WhatsApp sem nome) fica com ícone. */
+export function initials(name: string) {
+  const words = name
+    .trim()
+    .split(/\s+/)
+    .filter((w) => /^\p{L}/u.test(w));
+  if (!words.length) return "";
+  return (
+    words[0][0] + (words.length > 1 ? words[words.length - 1][0] : "")
+  ).toUpperCase();
+}
+
 /** Contato do WhatsApp chega como "WhatsApp (67) 9…": o selo de canal já diz isso. */
 export const displayName = (r: { requester_name: string; fields?: Record<string, string> }) =>
   r.fields?.Origem === "WhatsApp" ? r.requester_name.replace(/^WhatsApp\s+/i, "") : r.requester_name;
@@ -116,6 +150,8 @@ export default function RhQueue({
   error,
   tools,
   banner,
+  compact = false,
+  activeId = null,
 }: {
   requests: QueueRequest[];
   userId: string;
@@ -127,6 +163,9 @@ export default function RhQueue({
   error: string;
   tools?: React.ReactNode;
   banner?: React.ReactNode;
+  /** Lista de conversas à esquerda (estilo WhatsApp Web), com a conversa aberta ao lado. */
+  compact?: boolean;
+  activeId?: string | null;
 }) {
   const [search, setSearch] = useState("");
   const [theme, setTheme] = useState("");
@@ -180,6 +219,12 @@ export default function RhQueue({
         : // A vez do RH primeiro; depois o prazo mais próximo (1ª resposta ou conclusão).
           Number(!!b.needs_reply) - Number(!!a.needs_reply) || urgency(a) - urgency(b),
     );
+  // Na lista de conversas, a conversa aberta continua visível mesmo depois de sair do filtro
+  // (ex.: ao responder, ela deixa "Para responder"), até o atendente abrir outra.
+  if (compact && activeId && !rows.some((r) => r.id === activeId)) {
+    const aberta = requests.find((r) => r.id === activeId);
+    if (aberta) rows.unshift(aberta);
+  }
   const themes = services.filter((s) => requests.some((r) => r.service_id === s.id));
   const selectable = tab !== "concluidos";
   const chosen = rows.filter((r) => selected.has(r.id)).map((r) => r.id);
@@ -190,6 +235,177 @@ export default function RhQueue({
       else next.add(id);
       return next;
     });
+  if (compact)
+    return (
+      <section className="wa-list-inner" aria-label="Conversas">
+        <div className="wa-list-head">
+          <h1>Chamados</h1>
+          <div className="wa-list-tools">
+            {tools}
+            <button
+              className="icon-only"
+              onClick={onRefresh}
+              title={
+                syncedAt
+                  ? `Atualizado ${syncedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} · atualizar agora`
+                  : "Atualizar"
+              }
+              aria-label="Atualizar lista"
+            >
+              <RefreshCw size={17} />
+            </button>
+          </div>
+        </div>
+        {banner}
+        {error && (
+          <div className="notice" role="alert">
+            {error}
+          </div>
+        )}
+        {actionError && (
+          <div className="notice" role="alert">
+            {actionError}
+          </div>
+        )}
+        <div className="wa-search">
+          <label>
+            <Search size={15} />
+            <input
+              aria-label="Buscar chamado"
+              placeholder="Buscar conversa"
+              title="Busca por protocolo, nome ou assunto"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label="Limpar busca"
+                onClick={() => setSearch("")}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </label>
+          <select
+            aria-label="Filtrar por tema"
+            value={theme}
+            onChange={(e) => setTheme(e.target.value)}
+          >
+            <option value="">Todos os temas</option>
+            {themes.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.title}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="wa-chips" role="tablist">
+          {tabs.map(([key, label, test]) => {
+            const count = requests.filter(test).length;
+            return (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={tab === key}
+                className={`${tab === key ? "selected" : ""} ${(key === "atrasados" || key === "responder") && count ? "alert" : ""}`}
+                onClick={() => setTab(key)}
+              >
+                {label}
+                {count > 0 && <span>{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div className="wa-items" role="list">
+          {rows.length === 0 ? (
+            <div className="queue-empty">
+              <Inbox size={28} />
+              <strong>
+                {tab === "responder" && !term && !theme
+                  ? "Tudo respondido"
+                  : requests.length
+                    ? "Nenhum chamado aqui"
+                    : "Nenhum chamado recebido ainda"}
+              </strong>
+              <span>
+                {term || theme
+                  ? "Ajuste a busca ou o tema."
+                  : "Quando chegar um chamado, ele aparece nesta lista."}
+              </span>
+            </div>
+          ) : (
+            rows.map((r) => {
+              const nome = displayName(r);
+              const ini = initials(nome);
+              const wa = r.fields?.Origem === "WhatsApp";
+              const late = isOverdue(r);
+              return (
+                <button
+                  key={r.id}
+                  role="listitem"
+                  className={`wa-item ${activeId === r.id ? "active" : ""} ${r.needs_reply && open(r) ? "unread" : ""}`}
+                  onClick={() => onOpen(r.id)}
+                  aria-current={activeId === r.id ? "true" : undefined}
+                >
+                  <span
+                    className={`wa-avatar ${wa ? "wa-avatar-wa" : ""}`}
+                    aria-hidden
+                  >
+                    {ini || <UserRound size={20} />}
+                    <i>
+                      {wa ? <MessageCircle size={10} /> : <Globe size={10} />}
+                    </i>
+                  </span>
+                  <span className="wa-item-body">
+                    <span className="wa-line">
+                      <strong>{nome}</strong>
+                      <time className={r.needs_reply && open(r) ? "fresh" : ""}>
+                        {chatTime(r.last_message_at || r.created_at)}
+                      </time>
+                    </span>
+                    <span className="wa-line">
+                      <span className="wa-subject">{r.subject}</span>
+                      {r.needs_reply && open(r) && (
+                        <span
+                          className="wa-unread"
+                          aria-label="Aguardando resposta do RH"
+                        />
+                      )}
+                    </span>
+                    <span className="wa-line wa-meta">
+                      <span>
+                        {r.protocol}
+                        {r.assigned_name
+                          ? ` · ${r.assigned_name.split(" ")[0]}`
+                          : open(r)
+                            ? " · sem responsável"
+                            : ""}
+                      </span>
+                      {open(r) ? (
+                        <span
+                          className={`wa-due ${late ? "late" : r.sla?.level ? `sla-${r.sla.level}` : ""}`}
+                        >
+                          {unanswered(r) &&
+                          r.first_response?.level === "atrasado"
+                            ? "1ª resposta atrasada"
+                            : r.due_at
+                              ? remaining(r.due_at)
+                              : r.status}
+                        </span>
+                      ) : (
+                        <span className="wa-due done">Concluído</span>
+                      )}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      </section>
+    );
+
   return (
     <section className="queue">
       <div className="queue-head">

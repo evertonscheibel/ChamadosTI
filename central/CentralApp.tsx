@@ -26,9 +26,13 @@ import {
   CircleHelp,
   Send,
   CheckCircle2,
+  PanelRightOpen,
+  PanelRightClose,
+  MessageCircle,
 } from "lucide-react";
 import { services, statuses, faq } from "./catalog.mjs";
 import "./central.css";
+import "./whatsapp-layout.css";
 import { api } from "./api";
 import SeniorDocuments from "./SeniorDocuments";
 import SeniorExport from "./SeniorExport";
@@ -36,7 +40,7 @@ import SeniorSync from "./SeniorSync";
 import Management from "./Management";
 import { useTicketAlerts, AlertToasts, AlertSettings, WhatsappBanner, type WhatsappHealth } from "./TicketAlerts";
 import Deliveries from "./Deliveries";
-import RhQueue, { Channel, Deadline, displayName, type QueueTab, type QueueRequest } from "./RhQueue";
+import RhQueue, { Channel, Deadline, displayName, initials, type QueueTab, type QueueRequest } from "./RhQueue";
 
 type User = {
   id: string;
@@ -537,14 +541,35 @@ function RequestDetail({
   onBack,
   onUpdated,
   onOpenRequest,
+  embedded = false,
 }: {
   id: string;
   user: User;
   onBack: () => void;
   onUpdated: () => void;
   onOpenRequest?: (id: string) => void;
+  /** Aberta ao lado da lista de conversas (layout estilo WhatsApp Web). */
+  embedded?: boolean;
 }) {
   const rh = user.role === "rh";
+  const [showInfo, setShowInfo] = useState(() => {
+    try {
+      const salvo = window.localStorage.getItem("central.detalhes");
+      // Sem preferência salva: aberto só em telas largas (no celular cobriria a conversa).
+      return salvo === null ? window.innerWidth > 1100 : salvo === "1";
+    } catch {
+      return window.innerWidth > 1100;
+    }
+  });
+  const toggleInfo = () =>
+    setShowInfo((v) => {
+      try {
+        window.localStorage.setItem("central.detalhes", v ? "0" : "1");
+      } catch {
+        /* sem armazenamento: só nesta tela */
+      }
+      return !v;
+    });
   const [templates, setTemplates] = useState<Template[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
   const [internal, setInternal] = useState(false);
@@ -698,12 +723,12 @@ function RequestDetail({
   }
   if (!detail)
     return (
-      <div className="ticket">
+      <div className={`ticket ${embedded ? "ticket-embedded" : ""}`}>
         <button className="back-link" onClick={onBack}>
           <ArrowLeft size={16} />
           Chamados
         </button>
-        {error ? <Notice>{error}</Notice> : <p className="muted">Carregando chamado…</p>}
+        {error ? <Notice>{error}</Notice> : <p className="muted wa-loading">Carregando conversa…</p>}
       </div>
     );
   const request = detail.request;
@@ -724,13 +749,26 @@ function RequestDetail({
       void update({ status: "Concluída" });
   };
   return (
-    <div className="ticket">
+    <div
+      className={`ticket ${embedded ? `ticket-embedded ${showInfo ? "info-open" : ""}` : ""}`}
+    >
       <button className="back-link" onClick={onBack}>
         <ArrowLeft size={16} />
         {rh ? "Chamados" : "Minhas solicitações"}
       </button>
       <header className="ticket-head">
+        {embedded && (
+          <span
+            className={`wa-avatar ${whatsapp ? "wa-avatar-wa" : ""}`}
+            aria-hidden
+          >
+            {initials(displayName(request)) || <UserRound size={20} />}
+          </span>
+        )}
         <div className="ticket-title">
+          {embedded && (
+            <strong className="wa-chat-name">{displayName(request)}</strong>
+          )}
           <span className="ticket-protocol">
             {request.protocol}
             <Channel request={request} />
@@ -784,6 +822,22 @@ function RequestDetail({
             </>
           ) : (
             <Badge status={request.status} />
+          )}
+          {embedded && (
+            <button
+              className="icon-only"
+              onClick={toggleInfo}
+              title={
+                showInfo ? "Esconder detalhes" : "Mostrar detalhes do chamado"
+              }
+              aria-pressed={showInfo}
+            >
+              {showInfo ? (
+                <PanelRightClose size={18} />
+              ) : (
+                <PanelRightOpen size={18} />
+              )}
+            </button>
           )}
         </div>
       </header>
@@ -1407,6 +1461,20 @@ export default function CentralApp() {
   >("home");
   const [requests, setRequests] = useState<Request[]>([]);
   const [active, setActive] = useState<string | null>(null);
+  // Layout de conversas ocupa exatamente a tela abaixo do cabeçalho (sem rolar a página).
+  useEffect(() => {
+    const medir = () => {
+      const wa = document.querySelector<HTMLElement>(".wa");
+      if (wa)
+        document.documentElement.style.setProperty(
+          "--wa-top",
+          `${Math.round(wa.getBoundingClientRect().top + window.scrollY)}px`,
+        );
+    };
+    medir();
+    window.addEventListener("resize", medir);
+    return () => window.removeEventListener("resize", medir);
+  });
   const [selected, setSelected] = useState<Service | null>(null);
   const [pending, setPending] = useState<Service | null>(null);
   const [activated, setActivated] = useState(false);
@@ -1691,7 +1759,60 @@ export default function CentralApp() {
         </div>
       </header>
       <main className="shell main-shell">
-        {active && user ? (
+        {user?.role === "rh" && (view === "requests" || active) ? (
+          <div className={`wa ${active ? "wa-has-chat" : ""}`}>
+            <aside className="wa-list">
+              <RhQueue
+                compact
+                activeId={active}
+                requests={requests}
+                userId={user.id}
+                tab={queue}
+                setTab={setQueue}
+                onOpen={setActive}
+                onRefresh={() => void refresh()}
+                syncedAt={syncedAt}
+                error={error}
+                tools={
+                  <AlertSettings
+                    sound={ticketAlerts.sound}
+                    toggleSound={ticketAlerts.toggleSound}
+                    test={ticketAlerts.test}
+                  />
+                }
+                banner={<WhatsappBanner health={whatsappHealth} />}
+              />
+            </aside>
+            <section className="wa-chat">
+              {active ? (
+                <RequestDetail
+                  key={active}
+                  id={active}
+                  user={user}
+                  embedded
+                  onBack={() => {
+                    setActive(null);
+                    setView("requests");
+                  }}
+                  onUpdated={() => void refresh()}
+                  onOpenRequest={(next) => setActive(next)}
+                />
+              ) : (
+                <div className="wa-empty">
+                  <span>
+                    <MessageCircle size={38} />
+                  </span>
+                  <h2>Central de Relacionamentos</h2>
+                  <p>Escolha uma conversa na lista para ler e responder.</p>
+                  <small>
+                    Mensagens novas aparecem sozinhas: a lista e a conversa se
+                    atualizam a cada 20 segundos.
+                  </small>
+                </div>
+              )}
+            </section>
+          </div>
+        ) : active && user ? (
           <RequestDetail
             key={active}
             id={active}
