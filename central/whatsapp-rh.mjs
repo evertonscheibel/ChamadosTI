@@ -240,7 +240,7 @@ export function menuText() {
     "💬 **Falar com o RH** (abre um chamado)",
     ...[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0].map(menuLine),
     "",
-    "A qualquer momento: **menu** volta para cá e **status** mostra os seus chamados.",
+    "A qualquer momento: **menu** volta para cá, **status** mostra os seus chamados e **sair** encerra a conversa.",
   ].join("\n");
 }
 export const invalidOptionText = "Não entendi. 🙂 Responda só com o **número** da opção (de 0 a 15).";
@@ -302,7 +302,7 @@ export function ticketOpenReminderText(protocol) {
 export function ticketClosedText(protocol, { survey = false } = {}) {
   const text = `Seu **chamado nº ${protocol}** foi atendido. ✅`;
   if (survey)
-    return `${text}\n\nComo foi o atendimento? Responda com uma nota de **1** a **5**\n(1 = muito ruim · 5 = ótimo).\n${SIGNATURE}`;
+    return `${text}\n\nComo foi o atendimento? Responda com uma nota de **1** a **5**\n(1 = muito ruim · 5 = ótimo).\nSe não quiser avaliar, envie **sair**.\n${SIGNATURE}`;
   return `${text}\nSe precisar de algo mais, é só mandar uma nova mensagem por aqui.\n${SIGNATURE}`;
 }
 /** Vários chamados concluídos de uma vez (atendente resolveu a conversa): uma mensagem só. */
@@ -311,7 +311,7 @@ export function ticketsClosedText(protocols, { survey = false } = {}) {
   const list = protocols.map((p) => `**${p}**`);
   const text = `Seus chamados nº ${list.slice(0, -1).join(", ")} e ${list.at(-1)} foram atendidos. ✅`;
   if (survey)
-    return `${text}\n\nComo foi o atendimento? Responda com uma nota de **1** a **5**\n(1 = muito ruim · 5 = ótimo).\n${SIGNATURE}`;
+    return `${text}\n\nComo foi o atendimento? Responda com uma nota de **1** a **5**\n(1 = muito ruim · 5 = ótimo).\nSe não quiser avaliar, envie **sair**.\n${SIGNATURE}`;
   return `${text}\nSe precisar de algo mais, é só mandar uma nova mensagem por aqui.\n${SIGNATURE}`;
 }
 export function awaitingEmployeeText(protocol) {
@@ -362,6 +362,7 @@ export function ackText(protocol) {
   return `Combinado! 👍 Seu **chamado nº ${protocol}** continua com o RH, e a resposta vem por aqui.`;
 }
 export const goodbyeText = "Por nada! 🙂 Se precisar de algo, é só mandar uma mensagem por aqui.";
+export const endedText = `Conversa encerrada. 👋 Quando precisar, é só mandar uma nova mensagem por aqui.\n${SIGNATURE}`;
 export function cancelConfirmText(protocol) {
   return `Quer **cancelar** o chamado nº ${protocol}?\nResponda **sim** para cancelar, ou **não** para manter o chamado aberto com o RH.`;
 }
@@ -455,7 +456,9 @@ export function parseCompetence(text) {
   if (m) return `${m[2]}-${String(MONTHS.indexOf(m[1].replace("marco", "março")) + 1).padStart(2, "0")}`;
   return null;
 }
-const MENU_WORD = /^(menu|in[ií]cio|voltar|sair)$/i;
+const MENU_WORD = /^(menu|in[ií]cio|voltar)$/i;
+// O colaborador encerra a conversa (fora de um chamado aberto, onde "encerrar" é cancelar o chamado).
+const END_WORD = /^(sair|fim|tchau|xau|at[eé] (mais|logo)|encerrar( (a )?(conversa|atendimento))?|finalizar( (a )?(conversa|atendimento))?|(era )?s[oó] isso|n[aã]o,? obrigad[oa]|nada)[!.\s]*$/i;
 
 /**
  * Próximo passo da conversa. state = { stage, theme, invalid, data }.
@@ -473,7 +476,11 @@ export function nextStep(state, text, { hasAttachment = false, hasAudio = false,
   const thanks = !hasAttachment && THANKS.test(trimmed);
   const closed = { stage: "encerrado", theme: null, invalid: 0, data: {} };
   // "obrigado" depois de encerrado (ou em vez da nota): despedida, sem mandar o menu de novo.
-  if (thanks && (stage === "encerrado" || stage === "pesquisa")) return { state: closed, goodbye: true };
+  if (thanks && (stage === "encerrado" || stage === "pesquisa" || stage === "menu")) return { state: closed, goodbye: true };
+  // "sair", "tchau"...: encerra sem mandar o menu. Com chamado aberto não vale: a mensagem
+  // entra no chamado e "encerrar" continua pedindo para cancelar.
+  if (!hasAttachment && END_WORD.test(trimmed) && stage !== "chamado" && stage !== "cancelar")
+    return { state: closed, goodbye: true, ended: true };
   const toMenu = () => ({ state: { stage: "menu", theme: null, invalid: 0, data: {} }, reply: menuText() });
   // "status" funciona em qualquer ponto da conversa (menos no meio dos dados pessoais).
   if (!hasAttachment && STATUS_WORD.test(trimmed) && !["doc_cpf", "doc_matricula", "doc_nome"].includes(stage))

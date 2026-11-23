@@ -100,6 +100,7 @@ import {
   chatwootTicket,
   ackText,
   goodbyeText,
+  endedText,
   cancelConfirmText,
   keptText,
   cancelledText,
@@ -927,10 +928,30 @@ async function processWhatsappRh(payload, config) {
     else if (concluded) state = { stage: "encerrado" };
   }
   if (state) state.data = JSON.parse(row.data || "{}");
+  // A resposta da pesquisa pode chegar numa conversa nova do Chatwoot (a do chamado já estava
+  // resolvida): a pesquisa pendente do mesmo telefone, dos últimos 3 dias, vale para esta mensagem.
+  const pendingSurvey =
+    phone && (!row || state?.stage === "encerrado")
+      ? db
+          .prepare(
+            `SELECT w.* FROM whatsapp_rh w JOIN requests r ON r.id=w.request_id
+             WHERE w.phone=? AND w.conversation_id<>? AND w.stage='pesquisa' AND r.status='Concluída' AND w.updated_at>=?
+             ORDER BY w.updated_at DESC LIMIT 1`,
+          )
+          .get(phone, conversationId, new Date(Date.now() - 3 * 86400000).toISOString())
+      : null;
+  if (pendingSurvey) state = { stage: "pesquisa", theme: pendingSurvey.theme, invalid: 0, data: {} };
+  const surveyRow = pendingSurvey || row;
   const step = nextStep(state, text, {
     hasAttachment: attachments.length > 0,
     hasAudio: attachments.some((a) => a.file_type === "audio"),
   });
+  // Qualquer resposta encerra a pesquisa da conversa antiga (só se avalia uma vez).
+  if (pendingSurvey)
+    db.prepare("UPDATE whatsapp_rh SET stage='encerrado',updated_at=? WHERE conversation_id=?").run(
+      new Date().toISOString(),
+      pendingSurvey.conversation_id,
+    );
   if (step.status) {
     const digits = phone.replace(/\D/g, "");
     const since = new Date(Date.now() - 30 * 86400000).toISOString();
@@ -947,9 +968,9 @@ async function processWhatsappRh(payload, config) {
   }
   if (step.rate) {
     transaction(() => {
-      const owner = db.prepare("SELECT u.id,u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?").get(row.request_id);
-      db.prepare("UPDATE requests SET rating=?,rated_at=? WHERE id=? AND status='Concluída'").run(step.rate, new Date().toISOString(), row.request_id);
-      history(row.request_id, owner, `Atendimento avaliado pelo colaborador: ${step.rate} de 5`, "rating", { nota: step.rate });
+      const owner = db.prepare("SELECT u.id,u.name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?").get(surveyRow.request_id);
+      db.prepare("UPDATE requests SET rating=?,rated_at=? WHERE id=? AND status='Concluída'").run(step.rate, new Date().toISOString(), surveyRow.request_id);
+      history(surveyRow.request_id, owner, `Atendimento avaliado pelo colaborador: ${step.rate} de 5`, "rating", { nota: step.rate });
       afterTicketClosed(conversationId, phone, step.state);
     });
     await sendChatwootMessage(conversationId, ratingThanksText(step.rate));
@@ -977,7 +998,7 @@ async function processWhatsappRh(payload, config) {
   if (step.goodbye) {
     // "obrigado" depois de encerrado: despedida e a conversa (reaberta pela mensagem) volta a resolvida.
     saveWhatsappState(conversationId, step.state, phone);
-    await sendChatwootMessage(conversationId, goodbyeText);
+    await sendChatwootMessage(conversationId, step.ended ? endedText : goodbyeText);
     await resolveWhenDone(conversationId);
     return;
   }

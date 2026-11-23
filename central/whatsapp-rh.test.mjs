@@ -196,6 +196,26 @@ test("pesquisa ao concluir: nota de 1 a 5; outra coisa volta ao menu", () => {
   }
   assert.equal(nextStep(state, "6").reply, menuText());
   assert.equal(nextStep(state, "oi, preciso de outra coisa").reply, menuText());
+  assert.match(ticketClosedText("FRZ-9", { survey: true }), /envie \*\*sair\*\*/);
+});
+
+test("comandos para encerrar a conversa: sair, tchau, fim, só isso", () => {
+  assert.match(menuText(), /\*\*sair\*\* encerra a conversa/);
+  for (const stage of [null, "menu", "encerrado", "pesquisa", "doc_opcao", "doc_cpf", "doc_mes"])
+    for (const text of ["sair", "Sair", "tchau!", "fim", "encerrar", "encerrar conversa", "finalizar atendimento", "só isso", "era so isso", "não, obrigado", "até mais"]) {
+      const step = nextStep({ stage, theme: 1, data: {} }, text);
+      assert.equal(step.goodbye, true, `${stage}: ${text}`);
+      assert.equal(step.ended, true, `${stage}: ${text}`);
+      assert.equal(step.state.stage, "encerrado");
+      assert.equal(step.reply, undefined);
+    }
+  assert.equal(nextStep({ stage: "menu", data: {} }, "obrigado").goodbye, true);
+  // Com chamado aberto, "encerrar" continua sendo cancelar e "tchau" entra no chamado.
+  assert.equal(nextStep({ stage: "chamado", theme: 3, data: {} }, "encerrar").confirmCancel, true);
+  assert.notEqual(nextStep({ stage: "chamado", theme: 3, data: {} }, "tchau").goodbye, true);
+  assert.notEqual(nextStep({ stage: "cancelar", theme: 3, data: {} }, "sair").ended, true);
+  // "menu" continua voltando ao menu, inclusive no meio dos documentos.
+  assert.equal(nextStep({ stage: "doc_cpf", theme: 1, data: {} }, "menu").reply, menuText());
 });
 
 test("horário do RH: dia útil, das 7h às 17h no fuso de MS", () => {
