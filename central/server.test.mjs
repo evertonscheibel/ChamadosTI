@@ -250,6 +250,19 @@ test("Central Frizelo: privacy, shared workflow, access codes and persistence", 
       (await call("/management?days=42", { cookie: rh })).status,
       400,
     );
+    // Período por datas, comparação, lista por indicador e PDF dos gestores.
+    assert.equal((await call("/management?from=2026-11-10&to=2026-11-01", { cookie: rh })).status, 400);
+    assert.equal((await call("/management?from=2026-11-01", { cookie: rh })).status, 400);
+    const ranged = (await call("/management?from=2026-11-01&to=2026-11-30&demo=true", { cookie: rh })).body;
+    assert.equal(ranged.scope, "equipe");
+    assert.equal(ranged.heatmap.length, 7);
+    assert.equal(new Date(ranged.previous.start).toISOString(), "2026-10-01T04:00:00.000Z");
+    assert.equal((await call("/management/list?metric=backlog&days=0&demo=true", { cookie: rh })).status, 200);
+    assert.equal((await call("/management/list?metric=xyz&days=0", { cookie: rh })).status, 400);
+    assert.equal((await call("/management/list?metric=backlog", { cookie: employee })).status, 403);
+    const pdf = await fetch(`${origin}/api/management.pdf?days=30`, { headers: { cookie: rh } });
+    assert.equal(pdf.status, 200);
+    assert.equal(pdf.headers.get("content-type"), "application/pdf");
     assert.equal(
       (await call("/senior/employees", { cookie: employee })).status,
       403,

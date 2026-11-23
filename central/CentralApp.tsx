@@ -1832,6 +1832,10 @@ export default function CentralApp() {
                 setQueue(tab as QueueTab);
                 navigate("requests");
               }}
+              onOpenRequest={(id) => {
+                setView("requests");
+                setActive(id);
+              }}
             />
           </section>
         ) : (

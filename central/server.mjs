@@ -10,7 +10,8 @@ import { createTiAlerts, backupProblem } from "./ti-alerts.mjs";
 import { extraction, startExtraction, csv } from "./senior-export.mjs";
 import { synchronization, startSynchronization } from "./senior-import.mjs";
 import { managementCsv } from "./management-export.mjs";
-import { managementReport } from "./indicators.mjs";
+import { managementReport, managementRows, indicatorRows } from "./indicators.mjs";
+import { managerConfig, isManager, managementPdf, monthlyReportDue, monthLabel, localMidnight, createManagerMailer } from "./managers.mjs";
 import { initializeLinks, registerLink } from "./integration-links.mjs";
 import {
   reply as hermesReply,
@@ -70,7 +71,7 @@ import { claimMessage, ignoreMessage, isSettled, hold, runTracked, rescueStuck, 
 import { configuration as chatwootConfiguration } from "./chatwoot-client.mjs";
 import { startWahaWatchdog } from "./waha-watchdog.mjs";
 import { allowedOrigins } from "./origins.mjs";
-import { createEmailAlerts } from "./email-alerts.mjs";
+import { createEmailAlerts, emailConfig } from "./email-alerts.mjs";
 import {
   whatsappConfig,
   phoneAllowed,
@@ -376,10 +377,13 @@ async function handleAttendanceMessage(session, message) {
   recordAnswer({ kind: "atendimento", ragHit, ticketCreated });
   return outcome.text;
 }
+const managers = managerConfig();
 const publicUser = (user) => ({
   id: user.id,
   name: user.name,
   role: user.role,
+  // Gestor do atendimento: vê os indicadores da equipe toda (managers.mjs).
+  manager: isManager(user, managers),
   unit: user.unit,
   department: user.department,
 });
@@ -1369,6 +1373,22 @@ function dailyDigest(open, now, config) {
 }
 
 /**
+ * Relatório mensal para os gestores (GESTORES_EMAILS): no 1º dia útil do mês, o
+ * PDF do mês anterior. O mês fica gravado antes do envio (não repete ao reiniciar).
+ */
+function monthlyManagerReport(now) {
+  if (!managerMailer.enabled) return;
+  const lastKey = db.prepare("SELECT value FROM settings WHERE key='gestor_report_month'").get()?.value ?? null;
+  const due = monthlyReportDue(now, { holidays: managers.holidays, hour: managers.hour, lastKey });
+  if (!due) return;
+  db.prepare("INSERT INTO settings (key,value) VALUES ('gestor_report_month',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(due.key);
+  const report = managementReport(db, { start: due.start, end: due.end, now });
+  const label = monthLabel(due.start);
+  const pdf = managementPdf(report, { title: `Relatório do atendimento RH · ${label}` });
+  void managerMailer.send({ label, pdf, report });
+}
+
+/**
  * A cada 5 minutos: atualiza o nível do prazo de cada chamado (o painel e o
  * Chatwoot mostram em destaque), manda o resumo diário dos prazos por e-mail e
  * o lembrete no WhatsApp para quem não respondeu o RH em 2 dias úteis.
@@ -1388,6 +1408,11 @@ async function automaticAlerts(now = Date.now()) {
     dailyDigest(open, now, config);
   } catch (e) {
     console.error("Resumo diário dos prazos:", e.message);
+  }
+  try {
+    monthlyManagerReport(now);
+  } catch (e) {
+    console.error("Relatório mensal dos gestores:", e.message);
   }
   for (const request of open) {
     if (!request.first_response_alerted && !request.first_response_at) {
@@ -2076,14 +2101,54 @@ http
           return json(res, 200, result);
         }
         if (
-          ["/api/management", "/api/management.csv"].includes(pathname) &&
+          ["/api/management", "/api/management.csv", "/api/management.pdf", "/api/management/list"].includes(pathname) &&
           req.method === "GET"
         ) {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          const manager = isManager(user, managers);
+          // Período: from/to (AAAA-MM-DD, fuso de MS, "to" inclusive) ou days (0, 7, 30, 90).
+          const from = url.searchParams.get("from");
+          const to = url.searchParams.get("to");
           const days = Number(url.searchParams.get("days") ?? 30);
-          if (![0, 7, 30, 90].includes(days)) fail(400, "Período inválido.");
           const includeDemo = url.searchParams.get("demo") === "true";
-          const report = managementReport(db, { days, includeDemo });
+          const options = { days, includeDemo };
+          if (from || to) {
+            const day = /^\d{4}-\d{2}-\d{2}$/;
+            if (!day.test(from || "") || !day.test(to || "")) fail(400, "Período inválido.");
+            const start = localMidnight(from);
+            const end = localMidnight(to) + 86400000;
+            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 400 * 86400000)
+              fail(400, "Período inválido.");
+            Object.assign(options, { start, end });
+          } else if (![0, 7, 30, 90].includes(days)) fail(400, "Período inválido.");
+          // Atendente que não é gestor vê só os próprios números.
+          const scope = manager ? {} : { scopeUserId: user.id };
+          if (pathname === "/api/management/list") {
+            const metric = url.searchParams.get("metric") || "";
+            const rows = indicatorRows(managementRows(db, scope), metric, {
+              ...options,
+              owner: url.searchParams.get("owner") || undefined,
+              service: url.searchParams.get("service") || undefined,
+            });
+            if (!rows) fail(400, "Indicador inválido.");
+            return json(res, 200, {
+              total: rows.length,
+              requests: rows.slice(0, 500).map((r) => ({
+                id: r.id,
+                protocol: r.protocol,
+                subject: r.subject,
+                status: r.status,
+                service_id: r.service_id,
+                assigned_name: r.assigned_name || null,
+                created_at: r.created_at,
+                due_at: r.due_at,
+                closed_at: r.closed_at,
+              })),
+            });
+          }
+          const report = { ...managementReport(db, options, scope), scope: manager ? "equipe" : "pessoal" };
+          // Sem ranking dos colegas: o atendente vê só a própria linha.
+          if (!manager) report.owners = report.owners.filter((o) => o.id === user.id);
           if (pathname.endsWith(".csv")) {
             res.writeHead(200, {
               "Content-Type": "text/csv; charset=utf-8",
@@ -2091,6 +2156,15 @@ http
                 'attachment; filename="indicadores-rh.csv"',
             });
             return res.end(managementCsv(report, { days, includeDemo }));
+          }
+          if (pathname.endsWith(".pdf")) {
+            if (!manager) fail(403, "O relatório em PDF é dos gestores.");
+            res.writeHead(200, {
+              "Content-Type": "application/pdf",
+              "Content-Disposition": 'attachment; filename="relatorio-atendimento-rh.pdf"',
+              "Cache-Control": "no-store",
+            });
+            return res.end(managementPdf(report));
           }
           return json(res, 200, report);
         }
@@ -2726,6 +2800,7 @@ http
 // Vigia da sessão do WhatsApp (WAHA): reinicia sozinho quando ela trava.
 const wahaWatchdog = startWahaWatchdog({ chatwootBase: chatwootConfiguration().base });
 const emailAlerts = createEmailAlerts();
+const managerMailer = createManagerMailer({ smtp: emailConfig(), config: managers });
 // Alertas para a TI: WhatsApp fora por mais de 10 min, Senior com 3 falhas seguidas, backup atrasado ou com erro.
 const tiAlerts = createTiAlerts();
 console.log(tiAlerts.enabled ? "Alertas da TI por e-mail ligados." : "Alertas da TI por e-mail desligados (configure SMTP_HOST e ALERTA_TI_EMAILS).");

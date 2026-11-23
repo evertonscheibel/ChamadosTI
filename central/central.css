@@ -3951,3 +3951,100 @@ button.q-main:focus-visible {
   margin-top: 8px;
   font-size: 12.5px;
 }
+/* Indicadores: comparação, números clicáveis, lista por indicador e horários de pico */
+.period-line {
+  font-size: 13px;
+  color: #657169;
+  margin: 4px 0 0;
+}
+.delta {
+  font-style: normal;
+  font-size: 12px;
+  color: #657169;
+}
+.delta-good {
+  color: #1f7a4d;
+}
+.delta-bad {
+  color: #b3261e;
+}
+.num-link,
+.link-cell,
+.link-inline {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.num-link:hover,
+.link-cell:hover,
+.link-inline:hover {
+  color: var(--brand);
+  text-decoration-style: solid;
+}
+.link-cell {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.drill {
+  background: white;
+  border: 1px solid #e3e7e3;
+  border-left: 4px solid var(--brand);
+  border-radius: 12px;
+  padding: 18px;
+  margin: 18px 0;
+  scroll-margin-top: 16px;
+}
+.drill-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.drill-head h2 {
+  font-size: 17px;
+  margin: 0;
+}
+.heatmap-wrap {
+  overflow-x: auto;
+}
+.heatmap {
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: 11px;
+  min-width: 640px;
+}
+.heatmap th {
+  font-weight: 600;
+  color: #657169;
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+.heatmap td {
+  width: 30px;
+  height: 26px;
+  text-align: center;
+  border-radius: 4px;
+  background: #f3f1ef;
+  color: #2b211e;
+}
+.heatmap td.heat-1 { background: #f4dcd8; }
+.heatmap td.heat-2 { background: #e5a79d; }
+.heatmap td.heat-3 { background: #c65a4a; color: white; }
+.heatmap td.heat-4 { background: #841c11; color: white; }
+.heatmap td.heat-total {
+  background: none;
+  font-weight: 700;
+}
+.management-controls input[type="date"] {
+  border: 1px solid #d9dfdb;
+  border-radius: 9px;
+  background: white;
+  padding: 10px;
+  color: #173d31;
+}
