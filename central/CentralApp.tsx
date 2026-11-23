@@ -130,6 +130,10 @@ const maskCpf = (value: string) =>
     .replace(/(\d{3})(\d)/, "$1.$2")
     .replace(/(\d{3})(\d{1,2})$/, "$1-$2");
 
+/** Homologação só quando aberta no próprio computador (localhost); no servidor é produção. */
+const HOMOLOGACAO =
+  typeof window !== "undefined" && ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+
 function Brand({ light = false }: { light?: boolean }) {
   return (
     <div className={`brand ${light ? "brand-light" : ""}`}>
@@ -1640,7 +1644,7 @@ export default function CentralApp() {
         <span>Um canal para cuidar de quem faz a Frizelo.</span>
         <span>
           <ShieldCheck size={13} />
-          Ambiente de homologação
+          {HOMOLOGACAO ? "Ambiente de homologação" : "Ambiente seguro · rede interna"}
         </span>
       </div>
       <header className="site-header">
@@ -2278,7 +2282,7 @@ export default function CentralApp() {
           <small>
             Frizelo Frigoríficos · {new Date().getFullYear()}
             <br />
-            Homologação local
+            {HOMOLOGACAO ? "Homologação local" : "Atendimento do RH"}
           </small>
         </div>
       </footer>
