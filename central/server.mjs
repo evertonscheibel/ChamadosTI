@@ -379,12 +379,23 @@ async function handleAttendanceMessage(session, message) {
   return outcome.text;
 }
 const managers = managerConfig();
+/** Gestores = CENTRAL_GESTORES (servidor) + contas marcadas na tela "Equipe do RH". */
+const managerSettings = () => ({
+  ...managers,
+  identifiers: [
+    ...managers.identifiers,
+    ...db.prepare("SELECT identifier FROM users WHERE role='rh' AND manager=1").all().map((r) => r.identifier),
+  ],
+});
+// Equipe do RH = pessoas com CPF; ficam de fora as contas técnicas, de teste e de demonstração.
+const RH_TEAM = "u.role='rh' AND u.id NOT LIKE 'demo-%' AND length(u.identifier)=11 AND u.identifier NOT GLOB '*[^0-9]*'";
+const maskCpf = (cpf) => `${cpf.slice(0, 3)}.***.***-${cpf.slice(9)}`;
 const publicUser = (user) => ({
   id: user.id,
   name: user.name,
   role: user.role,
   // Gestor do atendimento: vê os indicadores da equipe toda (managers.mjs).
-  manager: isManager(user, managers),
+  manager: isManager(user, managerSettings()),
   unit: user.unit,
   department: user.department,
 });
@@ -2126,7 +2137,7 @@ http
           req.method === "GET"
         ) {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
-          const manager = isManager(user, managers);
+          const manager = isManager(user, managerSettings());
           // Período: from/to (AAAA-MM-DD, fuso de MS, "to" inclusive) ou days (0, 7, 30, 90).
           const from = url.searchParams.get("from");
           const to = url.searchParams.get("to");
@@ -2330,12 +2341,92 @@ http
         if (pathname === "/api/team" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
           return json(res, 200, {
-            team: db
-              .prepare(
-                "SELECT id,name FROM users WHERE role='rh' ORDER BY name",
-              )
-              .all(),
+            team: db.prepare(`SELECT u.id,u.name FROM users u WHERE ${RH_TEAM} ORDER BY u.name`).all(),
           });
+        }
+        // --- Equipe do RH: quem atende na central e quem é gestor ---------------------
+        if (pathname === "/api/rh-team" && req.method === "GET") {
+          if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
+          const settings = managerSettings();
+          const team = db
+            .prepare(
+              `SELECT u.id,u.identifier,u.name,u.role,u.unit,u.department,u.manager,u.password_hash,
+                 (SELECT COUNT(*) FROM requests r WHERE r.assigned_to=u.id AND r.status<>'Concluída') open
+               FROM users u WHERE ${RH_TEAM} ORDER BY u.name`,
+            )
+            .all()
+            .map((t) => ({
+              id: t.id,
+              name: t.name,
+              cpf_masked: maskCpf(t.identifier),
+              unit: t.unit,
+              department: t.department,
+              manager: isManager(t, settings),
+              manager_marked: t.manager === 1,
+              // Gestor definido em CENTRAL_GESTORES: só muda no servidor.
+              manager_fixed: managers.identifiers.includes(t.identifier),
+              active: !t.password_hash.startsWith("!") && t.password_hash !== "bloqueado",
+              open: t.open,
+              self: t.id === user.id,
+            }));
+          return json(res, 200, {
+            team,
+            can_manage: isManager(user, settings),
+            managers_defined: settings.identifiers.length > 0,
+          });
+        }
+        if (pathname === "/api/rh-team" && req.method === "POST") {
+          if (!isManager(user, managerSettings())) fail(403, "Só gestores do atendimento alteram a equipe do RH.");
+          const input = await body(req);
+          const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(input.user_id || ""));
+          if (!target) fail(404, "Colaborador não encontrado.");
+          if (target.role === "rh") fail(409, `${target.name} já faz parte da equipe do RH.`);
+          if (
+            !/^\d{11}$/.test(target.identifier) ||
+            !db.prepare("SELECT user_id FROM senior_accounts WHERE user_id=? AND active=1").get(target.id)
+          )
+            fail(400, "Só colaboradores ativos na Senior podem ser atendentes.");
+          transaction(() => {
+            db.prepare("UPDATE users SET role='rh',manager=0 WHERE id=?").run(target.id);
+            // Entra de novo para ver a central do RH.
+            db.prepare("DELETE FROM sessions WHERE user_id=?").run(target.id);
+          });
+          console.log(`[equipe] ${user.name} adicionou ${target.name} à equipe do RH`);
+          return json(res, 200, { ok: true });
+        }
+        const teamMatch = pathname.match(/^\/api\/rh-team\/([a-zA-Z0-9-]+)(\/access-code)?$/);
+        if (teamMatch) {
+          if (!isManager(user, managerSettings())) fail(403, "Só gestores do atendimento alteram a equipe do RH.");
+          const target = db.prepare(`SELECT u.* FROM users u WHERE u.id=? AND ${RH_TEAM}`).get(teamMatch[1]);
+          if (!target) fail(404, "Atendente não encontrado.");
+          if (teamMatch[2] && req.method === "POST")
+            return json(res, 200, { code: issueCode(target.id), name: target.name });
+          if (teamMatch[2]) fail(405, "Método não permitido.");
+          if (target.id === user.id) fail(400, "Peça a outro gestor para alterar o seu próprio acesso.");
+          const fixed = managers.identifiers.includes(target.identifier);
+          if (req.method === "PATCH") {
+            const input = await body(req);
+            if (typeof input.manager !== "boolean") fail(400, "Informe se é gestor.");
+            if (fixed) fail(409, "Este gestor está definido na configuração do servidor (CENTRAL_GESTORES).");
+            db.prepare("UPDATE users SET manager=? WHERE id=?").run(input.manager ? 1 : 0, target.id);
+            console.log(`[equipe] ${user.name} ${input.manager ? "marcou" : "desmarcou"} ${target.name} como gestor`);
+            return json(res, 200, { ok: true });
+          }
+          if (req.method === "DELETE") {
+            if (fixed) fail(409, "Este gestor está definido na configuração do servidor (CENTRAL_GESTORES).");
+            const open = db
+              .prepare("SELECT COUNT(*) n FROM requests WHERE assigned_to=? AND status<>'Concluída'")
+              .get(target.id).n;
+            if (open)
+              fail(409, `${target.name} ainda é responsável por ${open} chamado(s) em aberto. Transfira antes de remover.`);
+            transaction(() => {
+              db.prepare("UPDATE users SET role='colaborador',manager=0 WHERE id=?").run(target.id);
+              db.prepare("DELETE FROM sessions WHERE user_id=?").run(target.id);
+            });
+            console.log(`[equipe] ${user.name} removeu ${target.name} da equipe do RH`);
+            return json(res, 200, { ok: true });
+          }
+          fail(405, "Método não permitido.");
         }
         if (pathname === "/api/users" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");

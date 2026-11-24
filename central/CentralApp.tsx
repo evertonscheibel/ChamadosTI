@@ -37,6 +37,7 @@ import { api } from "./api";
 import SeniorDocuments from "./SeniorDocuments";
 import SeniorExport from "./SeniorExport";
 import SeniorSync from "./SeniorSync";
+import RhTeam from "./RhTeam";
 import Management from "./Management";
 import { useTicketAlerts, AlertToasts, AlertSettings, WhatsappBanner, type WhatsappHealth } from "./TicketAlerts";
 import Deliveries from "./Deliveries";
@@ -48,6 +49,7 @@ type User = {
   role: "colaborador" | "rh";
   unit: string;
   department: string;
+  manager?: boolean;
 };
 type Service = (typeof services)[number];
 type Request = {
@@ -1306,10 +1308,12 @@ function Employees() {
   const [access, setAccess] = useState<{ code: string; name: string } | null>(
     null,
   );
-  async function load() {
+  const [teamVersion, setTeamVersion] = useState(0);
+  const [canManage, setCanManage] = useState(false);
+  async function load(keepPage = false) {
     try {
       setUsers((await api<{ users: typeof users }>("/users")).users);
-      setPage(0);
+      if (!keepPage) setPage(0);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -1322,6 +1326,25 @@ function Employees() {
     setError("");
     try {
       setAccess(await api(`/users/${id}/access-code`, "POST", {}));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function promote(employee: { id: string; name: string }) {
+    if (
+      !window.confirm(
+        `Tornar ${employee.name} atendente do RH?\n\nA pessoa passa a ver e responder todos os chamados na central.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await api("/rh-team", "POST", { user_id: employee.id });
+      setTeamVersion((v) => v + 1);
+      await load(true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1350,6 +1373,12 @@ function Employees() {
           Atualizar lista
         </button>
       </div>
+      <RhTeam
+        reload={teamVersion}
+        onChanged={() => void load(true)}
+        onCode={setAccess}
+        onCanManage={setCanManage}
+      />
       <SeniorSync onSynced={() => void load()} />
       {error && <Notice>{error}</Notice>}
       <div className="search-box employee-search">
@@ -1377,6 +1406,15 @@ function Employees() {
                   : ""}
               </p>
             </div>
+            {canManage && (
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={() => void promote(user)}
+              >
+                Tornar atendente
+              </button>
+            )}
             <button
               className="button secondary"
               disabled={busy}

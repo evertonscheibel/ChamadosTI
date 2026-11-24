@@ -58,6 +58,8 @@ db.exec("CREATE INDEX IF NOT EXISTS requests_chatwoot_conversation ON requests(c
 // Último chamado (e estado) mostrado em cada conversa do Chatwoot; diferente = reenviar.
 db.exec("CREATE TABLE IF NOT EXISTS chatwoot_ticket_sync (conversation_id TEXT PRIMARY KEY, signature TEXT NOT NULL, synced_at TEXT NOT NULL)");
 column("whatsapp_rh", "data", "TEXT NOT NULL DEFAULT '{}'");
+// Gestor do atendimento marcado na tela "Equipe do RH" (além de CENTRAL_GESTORES).
+column("users", "manager", "INTEGER NOT NULL DEFAULT 0");
 // Auditoria: quem recebeu qual documento da Senior pelo WhatsApp.
 db.exec(
   "CREATE TABLE IF NOT EXISTS whatsapp_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, phone TEXT, kind TEXT NOT NULL, month TEXT NOT NULL, numemp TEXT, numcad TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)",
@@ -118,7 +120,7 @@ export function verifyPassword(password, hash) {
     Buffer.from(digest, "hex"),
   );
 }
-const insert = db.prepare("INSERT OR IGNORE INTO users VALUES (?,?,?,?,?,?,?)");
+const insert = db.prepare("INSERT OR IGNORE INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)");
 insert.run(
   "demo-colaborador",
   "00000000191",

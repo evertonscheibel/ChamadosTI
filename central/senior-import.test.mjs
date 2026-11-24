@@ -23,7 +23,7 @@ const row = (cpf = "00000000434", changes = {}) => ({
 test("import keeps passwords and roles, deduplicates CPF and preserves vacation/leave", () => {
   const db = fixture();
   try {
-    db.prepare("INSERT INTO users VALUES (?,?,?,?,?,?,?)").run(
+    db.prepare("INSERT INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)").run(
       "existing",
       "00000000434",
       "Anterior",
@@ -32,7 +32,7 @@ test("import keeps passwords and roles, deduplicates CPF and preserves vacation/
       "Setor validado",
       "existing-hash",
     );
-    db.prepare("INSERT INTO users VALUES (?,?,?,?,?,?,?)").run(
+    db.prepare("INSERT INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)").run(
       "rh",
       "00000000272",
       "RH",

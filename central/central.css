@@ -4048,3 +4048,63 @@ button.q-main:focus-visible {
   padding: 10px;
   color: #173d31;
 }
+
+/* Equipe do RH (aba Colaboradores) */
+.rh-team {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 18px 8px;
+  margin-bottom: 22px;
+}
+.rh-team-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  color: var(--red);
+}
+.rh-team-head h2 {
+  font-size: 17px;
+  margin: 0 0 4px;
+}
+.rh-team-head p {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+}
+.team-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: middle;
+  background: var(--cream);
+  color: var(--muted);
+}
+.team-tag.gestor {
+  background: #fbd997;
+  color: #5a3d00;
+}
+.team-tag.pendente {
+  background: #fbebeb;
+  color: #a64848;
+}
+.team-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.team-actions .button.is-on {
+  border-color: #d9a520;
+  color: #5a3d00;
+  background: #fff7e3;
+}
+.team-actions .button.danger {
+  color: #a64848;
+}
+.employee-row .button + .button {
+  margin-left: 6px;
+}

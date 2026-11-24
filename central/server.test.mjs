@@ -487,7 +487,7 @@ test("Central Frizelo: privacy, shared workflow, access codes and persistence", 
     const database = new DatabaseSync(path.join(directory, "central.sqlite"));
     const salt = "second-user-test";
     database
-      .prepare("INSERT INTO users VALUES (?,?,?,?,?,?,?)")
+      .prepare("INSERT INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)")
       .run(
         "test-second",
         "00000000353",
@@ -592,7 +592,7 @@ test("Central Frizelo: privacy, shared workflow, access codes and persistence", 
     );
     const importedDb = new DatabaseSync(path.join(directory, "central.sqlite"));
     importedDb
-      .prepare("INSERT INTO users VALUES (?,?,?,?,?,?,?)")
+      .prepare("INSERT INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)")
       .run(
         "imported-test",
         "00000000434",
@@ -719,6 +719,62 @@ test("Central Frizelo: privacy, shared workflow, access codes and persistence", 
     assert.equal(secondDetail.attachments.find((a) => a.message_id === sent.id)?.name, "documento-teste.pdf");
     assert.deepEqual(secondDetail.related.requests.map((r) => r.id), [request.id]);
     assert.equal((await call(`/requests/${second.body.request.id}`, { cookie: employee })).body.related, undefined);
+
+    // Equipe do RH: incluir atendente, marcar gestor, código de acesso e remover.
+    const teamDb = new DatabaseSync(path.join(directory, "central.sqlite"));
+    teamDb
+      .prepare("INSERT INTO users (id,identifier,name,role,unit,department,password_hash) VALUES (?,?,?,?,?,?,?)")
+      .run("imported-two", "00000000515", "Segundo cadastro", "colaborador", "Teste", "Teste", "!activation-required");
+    teamDb.prepare("INSERT INTO senior_accounts VALUES (?,?,?,?,?)").run("imported-two", "7", 1, "[]", new Date().toISOString());
+    assert.equal((await call("/rh-team", { cookie: employee })).status, 403);
+    assert.equal((await call("/rh-team", { cookie: employee, method: "POST", data: { user_id: "imported-test" } })).status, 403);
+    let team = (await call("/rh-team", { cookie: rh })).body;
+    // Contas de demonstração/técnicas ficam fora; sem gestor marcado, todo o RH gerencia.
+    assert.deepEqual(team.team, []);
+    assert.equal(team.can_manage, true);
+    assert.equal(team.managers_defined, false);
+    assert.equal((await call("/rh-team", { cookie: rh, method: "POST", data: { user_id: "demo-colaborador" } })).status, 400);
+    assert.equal((await call("/rh-team", { cookie: rh, method: "POST", data: { user_id: "imported-test" } })).status, 200);
+    assert.equal((await call("/rh-team", { cookie: rh, method: "POST", data: { user_id: "imported-test" } })).status, 409);
+    assert.ok(!(await call("/users", { cookie: rh })).body.users.some((u) => u.id === "imported-test"));
+    team = (await call("/rh-team", { cookie: rh })).body.team;
+    assert.equal(team.length, 1);
+    assert.equal(team[0].active, true);
+    assert.equal(team[0].cpf_masked, "000.***.***-34");
+    assert.deepEqual((await call("/team", { cookie: rh })).body.team.map((t) => t.id), ["imported-test"]);
+    const attendant = (
+      await call("/login", { method: "POST", data: { identifier: "00000000434", password: "SenhaDeTeste!2026" } })
+    );
+    assert.equal(attendant.body.user.role, "rh");
+    assert.equal(attendant.body.user.manager, true);
+    assert.equal((await call("/rh-team/imported-test", { cookie: rh, method: "PATCH", data: { manager: "sim" } })).status, 400);
+    assert.equal((await call("/rh-team/imported-test", { cookie: rh, method: "PATCH", data: { manager: true } })).status, 200);
+    // Com gestor marcado, só ele gerencia a equipe e vê os indicadores de todos.
+    team = (await call("/rh-team", { cookie: rh })).body;
+    assert.equal(team.managers_defined, true);
+    assert.equal(team.can_manage, false);
+    assert.equal((await call("/me", { cookie: rh })).body.user.manager, false);
+    assert.equal((await call("/rh-team", { cookie: rh, method: "POST", data: { user_id: "imported-two" } })).status, 403);
+    const gestor = attendant.cookie;
+    assert.equal((await call("/rh-team/imported-test", { cookie: gestor, method: "PATCH", data: { manager: false } })).status, 400);
+    assert.equal((await call("/rh-team/imported-test", { cookie: gestor, method: "DELETE", data: {} })).status, 400);
+    assert.equal((await call("/rh-team", { cookie: gestor, method: "POST", data: { user_id: "imported-two" } })).status, 200);
+    const newCode = await call("/rh-team/imported-two/access-code", { cookie: gestor, method: "POST", data: {} });
+    assert.equal(newCode.status, 200);
+    assert.equal(newCode.body.name, "Segundo cadastro");
+    assert.equal((await call("/rh-team/demo-rh/access-code", { cookie: gestor, method: "POST", data: {} })).status, 404);
+    team = (await call("/rh-team", { cookie: gestor })).body.team;
+    assert.equal(team.find((t) => t.id === "imported-two").active, false);
+    // Quem ainda é responsável por chamado aberto não sai da equipe.
+    teamDb.prepare("UPDATE requests SET assigned_to='imported-two' WHERE id=?").run(second.body.request.id);
+    const blocked = await call("/rh-team/imported-two", { cookie: gestor, method: "DELETE", data: {} });
+    assert.equal(blocked.status, 409);
+    assert.match(blocked.body.error, /1 chamado\(s\) em aberto/);
+    teamDb.prepare("UPDATE requests SET assigned_to=NULL WHERE id=?").run(second.body.request.id);
+    assert.equal((await call("/rh-team/imported-two", { cookie: gestor, method: "DELETE", data: {} })).status, 200);
+    assert.deepEqual((await call("/rh-team", { cookie: gestor })).body.team.map((t) => t.id), ["imported-test"]);
+    assert.ok((await call("/users", { cookie: gestor })).body.users.some((u) => u.id === "imported-two"));
+    teamDb.close();
     await call("/logout", { cookie: employee, method: "POST", data: {} });
     assert.equal((await call("/me", { cookie: employee })).status, 401);
   } finally {
