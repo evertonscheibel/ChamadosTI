@@ -60,6 +60,13 @@ db.exec("CREATE TABLE IF NOT EXISTS chatwoot_ticket_sync (conversation_id TEXT P
 column("whatsapp_rh", "data", "TEXT NOT NULL DEFAULT '{}'");
 // Gestor do atendimento marcado na tela "Equipe do RH" (além de CENTRAL_GESTORES).
 column("users", "manager", "INTEGER NOT NULL DEFAULT 0");
+// Equipe do RH entra com e-mail corporativo liberado pelo gestor (staff-access.mjs).
+column("users", "email", "TEXT");
+column("users", "disabled_at", "TEXT");
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email) WHERE email IS NOT NULL;
+CREATE TABLE IF NOT EXISTS password_links (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), purpose TEXT NOT NULL CHECK(purpose IN ('invite','reset')), expires INTEGER NOT NULL, created_at TEXT NOT NULL, created_by TEXT);
+CREATE INDEX IF NOT EXISTS password_links_user ON password_links(user_id);
+CREATE TABLE IF NOT EXISTS access_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, actor_id TEXT, actor_name TEXT, target_id TEXT, target_name TEXT, action TEXT NOT NULL, detail TEXT);`);
 // Auditoria: quem recebeu qual documento da Senior pelo WhatsApp.
 db.exec(
   "CREATE TABLE IF NOT EXISTS whatsapp_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, phone TEXT, kind TEXT NOT NULL, month TEXT NOT NULL, numemp TEXT, numcad TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)",

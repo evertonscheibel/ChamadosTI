@@ -124,6 +124,9 @@ const formatDate = (date: string) =>
     timeStyle: "short",
   });
 const serviceFor = (id: string) => services.find((s) => s.id === id);
+/** Campo do login: e-mail (equipe do RH) fica como digitado; números viram CPF formatado. */
+const loginIdentifier = (value: string) =>
+  /[a-zA-Z@]/.test(value) ? value.trim() : maskCpf(value);
 const maskCpf = (value: string) =>
   value
     .replace(/\D/g, "")
@@ -1184,13 +1187,177 @@ function Help() {
   );
 }
 
-function Activate({
+/** Equipe do RH: pede o link de nova senha para o e-mail corporativo. */
+function StaffForgot({ onClose }: { onClose: () => void }) {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      setMessage((await api<{ message: string }>("/password/forgot", "POST", { email })).message);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (message)
+    return (
+      <div className="info-content">
+        <div className="pending-service">{message}</div>
+        <p>O link vale por 1 hora e só pode ser usado uma vez. Confira também a caixa de spam.</p>
+        <button className="button primary" onClick={onClose}>
+          Concluir
+        </button>
+      </div>
+    );
+  return (
+    <form className="request-form" onSubmit={submit}>
+      <div className="form-service">
+        <p>
+          Informe o seu e-mail corporativo. Se ele estiver liberado na equipe do RH, você recebe um link para criar uma
+          nova senha.
+        </p>
+      </div>
+      <label>
+        E-mail corporativo
+        <input
+          required
+          type="email"
+          autoComplete="username"
+          maxLength={120}
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="nome@frizelo.com.br"
+        />
+      </label>
+      {error && <Notice>{error}</Notice>}
+      <div className="form-actions">
+        <button type="button" className="button secondary" onClick={onClose} disabled={busy}>
+          Cancelar
+        </button>
+        <button className="button primary" disabled={busy}>
+          {busy ? "Enviando…" : "Enviar link"}
+          <Send size={17} />
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Página do link recebido por e-mail: cria ou redefine a senha da equipe do RH. */
+function SetPassword({
+  token,
   onClose,
   onDone,
 }: {
+  token: string;
+  onClose: () => void;
+  onDone: (email: string) => void;
+}) {
+  const [info, setInfo] = useState<{ name: string; email: string; purpose: "invite" | "reset" } | null>(null);
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(true);
+  useEffect(() => {
+    api<{ name: string; email: string; purpose: "invite" | "reset" }>("/password/link", "POST", { token })
+      .then(setInfo)
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setBusy(false));
+  }, [token]);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (password !== confirmation) {
+      setError("As senhas precisam ser iguais.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ email: string }>("/password/set", "POST", { token, password });
+      onDone(result.email);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={info?.purpose === "reset" ? "Redefinir a sua senha" : "Criar a sua senha"} onClose={busy ? () => {} : onClose}>
+      {!info ? (
+        <div className="info-content">
+          {error ? <Notice>{error}</Notice> : <p>Conferindo o link…</p>}
+          {error && (
+            <button className="button primary" onClick={onClose}>
+              Voltar
+            </button>
+          )}
+        </div>
+      ) : (
+        <form className="request-form" onSubmit={submit}>
+          <div className="form-service">
+            <p>
+              <strong>{info.name}</strong> · {info.email}
+              <br />
+              Use pelo menos 10 caracteres, com letras e números. Não use o seu e-mail nem palavras óbvias.
+            </p>
+          </div>
+          <input type="hidden" autoComplete="username" value={info.email} readOnly />
+          <label>
+            Nova senha
+            <input
+              required
+              type="password"
+              minLength={10}
+              maxLength={256}
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+          <label>
+            Confirmar senha
+            <input
+              required
+              type="password"
+              minLength={10}
+              maxLength={256}
+              autoComplete="new-password"
+              value={confirmation}
+              onChange={(e) => setConfirmation(e.target.value)}
+            />
+          </label>
+          {error && <Notice>{error}</Notice>}
+          <div className="form-actions">
+            <button type="button" className="button secondary" onClick={onClose} disabled={busy}>
+              Cancelar
+            </button>
+            <button className="button primary" disabled={busy}>
+              {busy ? "Salvando…" : "Salvar minha senha"}
+              <Check size={17} />
+            </button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
+function Activate({
+  staff: staffStart = false,
+  onClose,
+  onDone,
+}: {
+  staff?: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
+  const [staff, setStaff] = useState(staffStart);
   const [cpf, setCpf] = useState("");
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
@@ -1219,6 +1386,18 @@ function Activate({
       title="Criar ou recuperar seu acesso"
       onClose={busy ? () => {} : onClose}
     >
+      <div className="access-tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={!staff} className={!staff ? "active" : ""} onClick={() => setStaff(false)}>
+          Sou colaborador
+        </button>
+        <button type="button" role="tab" aria-selected={staff} className={staff ? "active" : ""} onClick={() => setStaff(true)}>
+          Sou da equipe do RH
+        </button>
+      </div>
+      {staff ? (
+        <StaffForgot onClose={onClose} />
+      ) : (
+      <>
       <div className="form-service">
         <p>
           Solicite seu código de acesso ao RH da sua unidade. Com ele, você
@@ -1288,6 +1467,8 @@ function Activate({
           </button>
         </div>
       </form>
+      </>
+      )}
     </Modal>
   );
 }
@@ -1308,8 +1489,6 @@ function Employees() {
   const [access, setAccess] = useState<{ code: string; name: string } | null>(
     null,
   );
-  const [teamVersion, setTeamVersion] = useState(0);
-  const [canManage, setCanManage] = useState(false);
   async function load(keepPage = false) {
     try {
       setUsers((await api<{ users: typeof users }>("/users")).users);
@@ -1326,25 +1505,6 @@ function Employees() {
     setError("");
     try {
       setAccess(await api(`/users/${id}/access-code`, "POST", {}));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function promote(employee: { id: string; name: string }) {
-    if (
-      !window.confirm(
-        `Tornar ${employee.name} atendente do RH?\n\nA pessoa passa a ver e responder todos os chamados na central.`,
-      )
-    )
-      return;
-    setBusy(true);
-    setError("");
-    try {
-      await api("/rh-team", "POST", { user_id: employee.id });
-      setTeamVersion((v) => v + 1);
-      await load(true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1373,12 +1533,7 @@ function Employees() {
           Atualizar lista
         </button>
       </div>
-      <RhTeam
-        reload={teamVersion}
-        onChanged={() => void load(true)}
-        onCode={setAccess}
-        onCanManage={setCanManage}
-      />
+      <RhTeam onCode={setAccess} />
       <SeniorSync onSynced={() => void load()} />
       {error && <Notice>{error}</Notice>}
       <div className="search-box employee-search">
@@ -1406,15 +1561,6 @@ function Employees() {
                   : ""}
               </p>
             </div>
-            {canManage && (
-              <button
-                className="button secondary"
-                disabled={busy}
-                onClick={() => void promote(user)}
-              >
-                Tornar atendente
-              </button>
-            )}
             <button
               className="button secondary"
               disabled={busy}
@@ -1520,6 +1666,11 @@ export default function CentralApp() {
   const [selected, setSelected] = useState<Service | null>(null);
   const [pending, setPending] = useState<Service | null>(null);
   const [activated, setActivated] = useState(false);
+  // Link de senha da equipe do RH (#senha=...): o token fica só no navegador.
+  const [passwordToken, setPasswordToken] = useState<string | null>(() => {
+    const match = window.location.hash.match(/^#senha=([A-Za-z0-9_-]{20,100})$/);
+    return match ? match[1] : null;
+  });
   const [info, setInfo] = useState<"access" | "password" | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("Todas");
@@ -2093,7 +2244,7 @@ export default function CentralApp() {
                   </div>
                   {activated && (
                     <div className="pending-service">
-                      Senha definida. Entre com seu CPF e a nova senha.
+                      Senha definida. Entre com {cpf.includes("@") ? "o seu e-mail" : "o seu CPF"} e a nova senha.
                     </div>
                   )}
                   {pending && (
@@ -2103,16 +2254,14 @@ export default function CentralApp() {
                   )}
                   <form onSubmit={login}>
                     <label htmlFor="cpf">
-                      CPF
+                      CPF ou e-mail
                       <input
                         id="cpf"
-                        inputMode="numeric"
                         autoComplete="username"
                         required
-                        pattern="\d{3}\.\d{3}\.\d{3}-\d{2}"
-                        placeholder="000.000.000-00"
+                        placeholder="CPF · equipe do RH: e-mail corporativo"
                         value={cpf}
-                        onChange={(e) => setCpf(maskCpf(e.target.value))}
+                        onChange={(e) => setCpf(loginIdentifier(e.target.value))}
                       />
                     </label>
                     <label htmlFor="password">
@@ -2362,8 +2511,25 @@ export default function CentralApp() {
           </div>
         </Modal>
       )}
+      {passwordToken && (
+        <SetPassword
+          token={passwordToken}
+          onClose={() => {
+            setPasswordToken(null);
+            window.history.replaceState(null, "", window.location.pathname);
+          }}
+          onDone={(email) => {
+            setPasswordToken(null);
+            window.history.replaceState(null, "", window.location.pathname);
+            setCpf(email);
+            setActivated(true);
+            setPassword("");
+          }}
+        />
+      )}
       {info && (
         <Activate
+          staff={info === "password"}
           onClose={() => setInfo(null)}
           onDone={() => {
             setInfo(null);

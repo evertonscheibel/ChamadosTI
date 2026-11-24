@@ -73,6 +73,17 @@ import { startWahaWatchdog } from "./waha-watchdog.mjs";
 import { allowedOrigins } from "./origins.mjs";
 import { createEmailAlerts, emailConfig } from "./email-alerts.mjs";
 import {
+  staffDomains,
+  normalizeEmail,
+  emailProblem,
+  passwordProblem,
+  newLinkToken,
+  linkUrl,
+  linkMessage,
+  createAccessMailer,
+  LINK_HOURS,
+} from "./staff-access.mjs";
+import {
   whatsappConfig,
   phoneAllowed,
   nextStep,
@@ -388,7 +399,37 @@ const managerSettings = () => ({
   ],
 });
 // Equipe do RH = pessoas com CPF; ficam de fora as contas técnicas, de teste e de demonstração.
-const RH_TEAM = "u.role='rh' AND u.id NOT LIKE 'demo-%' AND length(u.identifier)=11 AND u.identifier NOT GLOB '*[^0-9]*'";
+const RH_TEAM =
+  "u.role='rh' AND u.disabled_at IS NULL AND u.id NOT LIKE 'demo-%' AND (u.email IS NOT NULL OR (length(u.identifier)=11 AND u.identifier NOT GLOB '*[^0-9]*'))";
+const domains = staffDomains();
+const smtpSettings = emailConfig();
+const accessMailer = createAccessMailer({ smtp: smtpSettings });
+/** Trilha de auditoria dos acessos da equipe (quem liberou, removeu, trocou senha...). */
+function accessAudit(actor, target, action, detail = null) {
+  db.prepare(
+    "INSERT INTO access_audit (at,actor_id,actor_name,target_id,target_name,action,detail) VALUES (?,?,?,?,?,?,?)",
+  ).run(new Date().toISOString(), actor?.id ?? null, actor?.name ?? null, target?.id ?? null, target?.name ?? null, action, detail);
+  console.log(`[acesso] ${actor?.name || "sistema"}: ${action}${target ? ` · ${target.name}` : ""}${detail ? ` (${detail})` : ""}`);
+}
+/** Novo link de senha (os anteriores da pessoa deixam de valer) enviado ao e-mail liberado. */
+async function sendPasswordLink(target, purpose, actor) {
+  const token = newLinkToken();
+  transaction(() => {
+    db.prepare("DELETE FROM password_links WHERE user_id=? OR expires<=?").run(target.id, Date.now());
+    db.prepare("INSERT INTO password_links VALUES (?,?,?,?,?,?)").run(
+      digest(token),
+      target.id,
+      purpose,
+      Date.now() + LINK_HOURS[purpose] * 3600000,
+      new Date().toISOString(),
+      actor?.id ?? null,
+    );
+  });
+  const sent = await accessMailer.send(target.email, linkMessage({ name: target.name, url: linkUrl(smtpSettings.centralUrl, token), purpose }));
+  accessAudit(actor, target, purpose === "invite" ? "convite enviado" : "link de nova senha enviado", sent ? target.email : "falha no envio");
+  return sent;
+}
+const forgotTries = new Map();
 const maskCpf = (cpf) => `${cpf.slice(0, 3)}.***.***-${cpf.slice(9)}`;
 const publicUser = (user) => ({
   id: user.id,
@@ -1565,7 +1606,9 @@ http
         });
       if (pathname === "/api/login" && req.method === "POST") {
         const input = await body(req);
-        const identifier = cpfValue(input.identifier);
+        // Equipe do RH: e-mail corporativo. Colaboradores: CPF.
+        const byEmail = String(input.identifier ?? "").includes("@");
+        const identifier = byEmail ? normalizeEmail(text(input.identifier, 120, "e-mail")) : cpfValue(input.identifier);
         text(input.password, 256, "senha");
         const password = input.password;
         const key = req.socket.remoteAddress;
@@ -1575,9 +1618,11 @@ http
             429,
             "Muitas tentativas. Aguarde alguns minutos e tente novamente.",
           );
-        const user = db
-          .prepare("SELECT * FROM users WHERE identifier=?")
-          .get(identifier);
+        const found = byEmail
+          ? db.prepare("SELECT * FROM users WHERE email=? AND role='rh'").get(identifier)
+          : db.prepare("SELECT * FROM users WHERE identifier=?").get(identifier);
+        // Quem já tem e-mail liberado não entra mais pelo CPF; conta desativada não entra.
+        const user = found && !found.disabled_at && !(!byEmail && found.role === "rh" && found.email) ? found : null;
         if (
           !user ||
           db
@@ -1591,7 +1636,7 @@ http
             count: prior?.until > Date.now() ? prior.count + 1 : 1,
             until: Date.now() + 5 * 60000,
           });
-          fail(401, "CPF ou senha incorreta.");
+          fail(401, byEmail ? "E-mail ou senha incorreta." : "CPF ou senha incorreta.");
         }
         failures.delete(key);
         db.prepare("DELETE FROM sessions WHERE expires<=?").run(Date.now());
@@ -1624,6 +1669,8 @@ http
           .get(identifier, digest(code), Date.now());
         if (
           !user ||
+          user.disabled_at ||
+          (user.role === "rh" && user.email) ||
           db
             .prepare(
               "SELECT user_id FROM senior_accounts WHERE user_id=? AND active=0",
@@ -1643,6 +1690,60 @@ http
           db.prepare("DELETE FROM sessions WHERE user_id=?").run(user.id);
         });
         return json(res, 200, { ok: true });
+      }
+      // --- Senha da equipe do RH por link no e-mail ---------------------------------
+      if (pathname === "/api/password/forgot" && req.method === "POST") {
+        const input = await body(req);
+        const email = normalizeEmail(text(input.email, 120, "e-mail"));
+        const key = req.socket.remoteAddress;
+        const prior = forgotTries.get(key);
+        const recent = prior && prior.until > Date.now() ? prior.count : 0;
+        if (recent >= 5) fail(429, "Muitos pedidos. Aguarde alguns minutos e tente novamente.");
+        forgotTries.set(key, { count: recent + 1, until: recent ? prior.until : Date.now() + 15 * 60000 });
+        // Mesma resposta sempre: não revela se o e-mail tem conta.
+        const answer = { ok: true, message: "Se este e-mail estiver liberado na equipe do RH, você vai receber um link em instantes." };
+        if (emailProblem(email, domains)) return json(res, 200, answer);
+        const target = db.prepare("SELECT * FROM users WHERE email=? AND role='rh' AND disabled_at IS NULL").get(email);
+        if (!target) return json(res, 200, answer);
+        // Um link a cada 2 minutos por pessoa (evita encher a caixa de alguém).
+        const last = db.prepare("SELECT MAX(created_at) at FROM password_links WHERE user_id=?").get(target.id)?.at;
+        if (last && Date.parse(last) > Date.now() - 2 * 60000) return json(res, 200, answer);
+        const active = !target.password_hash.startsWith("!") && target.password_hash !== "bloqueado";
+        await sendPasswordLink(target, active ? "reset" : "invite", null);
+        return json(res, 200, answer);
+      }
+      // Confere o link antes de mostrar o formulário (token no corpo, nunca na URL).
+      if (pathname === "/api/password/link" && req.method === "POST") {
+        const token = text((await body(req)).token, 100, "link");
+        const linked = db
+          .prepare(
+            "SELECT u.name,u.email,l.purpose FROM password_links l JOIN users u ON u.id=l.user_id WHERE l.token_hash=? AND l.expires>? AND u.disabled_at IS NULL AND u.role='rh'",
+          )
+          .get(digest(token), Date.now());
+        if (!linked) fail(400, "Este link não vale mais: ele expira e só pode ser usado uma vez. Peça um novo em “Esqueci minha senha”.");
+        return json(res, 200, { name: linked.name, email: linked.email, purpose: linked.purpose });
+      }
+      if (pathname === "/api/password/set" && req.method === "POST") {
+        const input = await body(req);
+        const token = text(input.token, 100, "link");
+        text(input.password, 256, "senha");
+        const linked = db
+          .prepare(
+            "SELECT u.*,l.purpose FROM password_links l JOIN users u ON u.id=l.user_id WHERE l.token_hash=? AND l.expires>? AND u.disabled_at IS NULL AND u.role='rh'",
+          )
+          .get(digest(token), Date.now());
+        if (!linked) fail(400, "Este link não vale mais: ele expira e só pode ser usado uma vez. Peça um novo em “Esqueci minha senha”.");
+        const problem = passwordProblem(input.password, linked.email || "");
+        if (problem) fail(400, problem);
+        transaction(() => {
+          db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hashPassword(input.password), linked.id);
+          db.prepare("DELETE FROM password_links WHERE user_id=?").run(linked.id);
+          db.prepare("DELETE FROM access_codes WHERE user_id=?").run(linked.id);
+          // Troca de senha derruba as sessões abertas (inclusive de quem tinha a senha antiga).
+          db.prepare("DELETE FROM sessions WHERE user_id=?").run(linked.id);
+        });
+        accessAudit(linked, linked, linked.purpose === "invite" ? "senha criada pelo convite" : "senha redefinida pelo link");
+        return json(res, 200, { ok: true, email: linked.email });
       }
       if (pathname === "/api/chatbot/message" && req.method === "POST") {
         const input = await body(req);
@@ -2344,28 +2445,29 @@ http
             team: db.prepare(`SELECT u.id,u.name FROM users u WHERE ${RH_TEAM} ORDER BY u.name`).all(),
           });
         }
-        // --- Equipe do RH: quem atende na central e quem é gestor ---------------------
+        // --- Equipe do RH: quem atende na central, por e-mail liberado pelo gestor -----
         if (pathname === "/api/rh-team" && req.method === "GET") {
           if (user.role !== "rh") fail(403, "Acesso exclusivo do RH.");
           const settings = managerSettings();
           const team = db
             .prepare(
-              `SELECT u.id,u.identifier,u.name,u.role,u.unit,u.department,u.manager,u.password_hash,
-                 (SELECT COUNT(*) FROM requests r WHERE r.assigned_to=u.id AND r.status<>'Concluída') open
+              `SELECT u.id,u.identifier,u.email,u.name,u.role,u.unit,u.department,u.manager,u.password_hash,
+                 (SELECT COUNT(*) FROM requests r WHERE r.assigned_to=u.id AND r.status<>'Concluída') open,
+                 (SELECT MAX(l.expires) FROM password_links l WHERE l.user_id=u.id) link_expires
                FROM users u WHERE ${RH_TEAM} ORDER BY u.name`,
             )
             .all()
             .map((t) => ({
               id: t.id,
               name: t.name,
-              cpf_masked: maskCpf(t.identifier),
-              unit: t.unit,
-              department: t.department,
+              email: t.email,
+              cpf_masked: /^\d{11}$/.test(t.identifier) ? maskCpf(t.identifier) : null,
               manager: isManager(t, settings),
               manager_marked: t.manager === 1,
               // Gestor definido em CENTRAL_GESTORES: só muda no servidor.
               manager_fixed: managers.identifiers.includes(t.identifier),
               active: !t.password_hash.startsWith("!") && t.password_hash !== "bloqueado",
+              link_pending: Boolean(t.link_expires && t.link_expires > Date.now()),
               open: t.open,
               self: t.id === user.id,
             }));
@@ -2373,43 +2475,80 @@ http
             team,
             can_manage: isManager(user, settings),
             managers_defined: settings.identifiers.length > 0,
+            domains,
+            mail_enabled: accessMailer.enabled,
           });
         }
+        if (pathname === "/api/rh-team/audit" && req.method === "GET") {
+          if (!isManager(user, managerSettings())) fail(403, "Só gestores do atendimento veem o histórico de acessos.");
+          return json(res, 200, {
+            events: db.prepare("SELECT at,actor_name,target_name,action,detail FROM access_audit ORDER BY id DESC LIMIT 200").all(),
+          });
+        }
+        // Gestor libera um e-mail corporativo: a conta nasce sem senha e a pessoa recebe o convite.
         if (pathname === "/api/rh-team" && req.method === "POST") {
           if (!isManager(user, managerSettings())) fail(403, "Só gestores do atendimento alteram a equipe do RH.");
+          if (!accessMailer.enabled) fail(503, "O envio de e-mail não está configurado na central.");
           const input = await body(req);
-          const target = db.prepare("SELECT * FROM users WHERE id=?").get(String(input.user_id || ""));
-          if (!target) fail(404, "Colaborador não encontrado.");
-          if (target.role === "rh") fail(409, `${target.name} já faz parte da equipe do RH.`);
-          if (
-            !/^\d{11}$/.test(target.identifier) ||
-            !db.prepare("SELECT user_id FROM senior_accounts WHERE user_id=? AND active=1").get(target.id)
-          )
-            fail(400, "Só colaboradores ativos na Senior podem ser atendentes.");
-          transaction(() => {
-            db.prepare("UPDATE users SET role='rh',manager=0 WHERE id=?").run(target.id);
-            // Entra de novo para ver a central do RH.
-            db.prepare("DELETE FROM sessions WHERE user_id=?").run(target.id);
-          });
-          console.log(`[equipe] ${user.name} adicionou ${target.name} à equipe do RH`);
-          return json(res, 200, { ok: true });
+          const name = text(input.name, 120, "nome").trim();
+          if (name.length < 3) fail(400, "Informe o nome da pessoa.");
+          const email = normalizeEmail(text(input.email, 120, "e-mail"));
+          const problem = emailProblem(email, domains);
+          if (problem) fail(400, problem);
+          const existing = db.prepare("SELECT * FROM users WHERE email=? OR identifier=?").get(email, `email:${email}`);
+          let target;
+          if (existing && !existing.disabled_at) fail(409, `${email} já está liberado para ${existing.name}.`);
+          if (existing) {
+            // E-mail que já foi da equipe: reativa a mesma conta (o histórico continua ligado a ela).
+            db.prepare("UPDATE users SET name=?,role='rh',manager=0,disabled_at=NULL,password_hash='!invited',email=? WHERE id=?").run(name, email, existing.id);
+            target = { ...existing, name, email };
+          } else {
+            target = { id: randomUUID(), name, email };
+            db.prepare(
+              "INSERT INTO users (id,identifier,name,role,unit,department,password_hash,email) VALUES (?,?,?,?,?,?,?,?)",
+            ).run(target.id, `email:${email}`, name, "rh", "RH", "Recursos Humanos", "!invited", email);
+          }
+          accessAudit(user, target, existing ? "acesso reativado" : "acesso liberado", email);
+          const sent = await sendPasswordLink(target, "invite", user);
+          return json(res, 200, { ok: true, sent });
         }
-        const teamMatch = pathname.match(/^\/api\/rh-team\/([a-zA-Z0-9-]+)(\/access-code)?$/);
+        const teamMatch = pathname.match(/^\/api\/rh-team\/([a-zA-Z0-9-]+)(\/access-code|\/link)?$/);
         if (teamMatch) {
           if (!isManager(user, managerSettings())) fail(403, "Só gestores do atendimento alteram a equipe do RH.");
           const target = db.prepare(`SELECT u.* FROM users u WHERE u.id=? AND ${RH_TEAM}`).get(teamMatch[1]);
           if (!target) fail(404, "Atendente não encontrado.");
-          if (teamMatch[2] && req.method === "POST")
+          if (teamMatch[2] === "/link" && req.method === "POST") {
+            if (!target.email) fail(400, "Cadastre o e-mail corporativo desta pessoa antes.");
+            if (!accessMailer.enabled) fail(503, "O envio de e-mail não está configurado na central.");
+            const active = !target.password_hash.startsWith("!") && target.password_hash !== "bloqueado";
+            const sent = await sendPasswordLink(target, active ? "reset" : "invite", user);
+            return json(res, 200, { ok: true, sent, email: target.email });
+          }
+          // Código de acesso pelo CPF: só para quem ainda não tem e-mail (transição).
+          if (teamMatch[2] === "/access-code" && req.method === "POST") {
+            if (target.email) fail(400, "Esta pessoa entra com o e-mail: use Enviar link.");
+            accessAudit(user, target, "código de acesso gerado");
             return json(res, 200, { code: issueCode(target.id), name: target.name });
+          }
           if (teamMatch[2]) fail(405, "Método não permitido.");
           if (target.id === user.id) fail(400, "Peça a outro gestor para alterar o seu próprio acesso.");
           const fixed = managers.identifiers.includes(target.identifier);
           if (req.method === "PATCH") {
             const input = await body(req);
+            if ("email" in input) {
+              const email = normalizeEmail(text(input.email, 120, "e-mail"));
+              const problem = emailProblem(email, domains);
+              if (problem) fail(400, problem);
+              const owner = db.prepare("SELECT id,name FROM users WHERE email=?").get(email);
+              if (owner && owner.id !== target.id) fail(409, `${email} já está liberado para ${owner.name}.`);
+              db.prepare("UPDATE users SET email=? WHERE id=?").run(email, target.id);
+              accessAudit(user, target, "e-mail cadastrado", email);
+              return json(res, 200, { ok: true });
+            }
             if (typeof input.manager !== "boolean") fail(400, "Informe se é gestor.");
             if (fixed) fail(409, "Este gestor está definido na configuração do servidor (CENTRAL_GESTORES).");
             db.prepare("UPDATE users SET manager=? WHERE id=?").run(input.manager ? 1 : 0, target.id);
-            console.log(`[equipe] ${user.name} ${input.manager ? "marcou" : "desmarcou"} ${target.name} como gestor`);
+            accessAudit(user, target, input.manager ? "marcado como gestor" : "deixou de ser gestor");
             return json(res, 200, { ok: true });
           }
           if (req.method === "DELETE") {
@@ -2419,11 +2558,20 @@ http
               .get(target.id).n;
             if (open)
               fail(409, `${target.name} ainda é responsável por ${open} chamado(s) em aberto. Transfira antes de remover.`);
+            const fromSenior = db.prepare("SELECT user_id FROM senior_accounts WHERE user_id=?").get(target.id);
             transaction(() => {
-              db.prepare("UPDATE users SET role='colaborador',manager=0 WHERE id=?").run(target.id);
+              // Quem veio da Senior volta a ser colaborador; conta só de e-mail é desativada.
+              if (fromSenior) db.prepare("UPDATE users SET role='colaborador',manager=0,email=NULL WHERE id=?").run(target.id);
+              else
+                db.prepare("UPDATE users SET manager=0,disabled_at=?,password_hash='!disabled' WHERE id=?").run(
+                  new Date().toISOString(),
+                  target.id,
+                );
               db.prepare("DELETE FROM sessions WHERE user_id=?").run(target.id);
+              db.prepare("DELETE FROM password_links WHERE user_id=?").run(target.id);
+              db.prepare("DELETE FROM access_codes WHERE user_id=?").run(target.id);
             });
-            console.log(`[equipe] ${user.name} removeu ${target.name} da equipe do RH`);
+            accessAudit(user, target, "acesso removido");
             return json(res, 200, { ok: true });
           }
           fail(405, "Método não permitido.");

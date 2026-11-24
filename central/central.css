@@ -4108,3 +4108,96 @@ button.q-main:focus-visible {
 .employee-row .button + .button {
   margin-left: 6px;
 }
+.team-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.team-head-actions .button {
+  font-size: 11px;
+}
+.team-invite {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  background: var(--cream);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 4px 0 12px;
+}
+.team-invite label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.team-invite input {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 400;
+}
+.team-invite-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.team-invite small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+.team-audit {
+  margin: 14px 0 8px;
+  font-size: 12px;
+}
+.team-audit h3 {
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+.team-audit ul {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 260px;
+  overflow: auto;
+}
+.team-audit time {
+  color: var(--muted);
+}
+.access-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.access-tabs button {
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.access-tabs button.active {
+  border-color: var(--red);
+  color: var(--red);
+  font-weight: 600;
+  background: #f8ecea;
+}
+@media (max-width: 540px) {
+  .team-invite {
+    grid-template-columns: 1fr;
+  }
+}
+.rh-team-head {
+  flex-wrap: wrap;
+}
+.rh-team-head > div:not(.team-head-actions) {
+  flex: 1 1 320px;
+}
+.team-head-actions .button {
+  white-space: nowrap;
+}
